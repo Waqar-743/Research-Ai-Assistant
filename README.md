@@ -2,9 +2,9 @@
 
 A sophisticated FastAPI backend that leverages multiple AI agents to conduct comprehensive research, answer complex questions, and synthesize information from multiple sources.
 
-*Last updated: January 28, 2026*
 
-## 🌟 Features
+
+##  Features
 
 - **Multi-Agent Orchestration**: 5 specialized AI agents working in concert
 - **Real-time Updates**: WebSocket support for live progress tracking
