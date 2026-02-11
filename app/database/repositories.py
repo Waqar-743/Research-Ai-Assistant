@@ -77,6 +77,11 @@ class ResearchRepository:
         return await ResearchSession.find_one(
             ResearchSession.research_id == research_id
         )
+
+    @staticmethod
+    async def get_by_session_id(session_id: str) -> Optional[ResearchSession]:
+        """Backward-compatible alias for research session lookup."""
+        return await ResearchRepository.get_by_id(session_id)
     
     @staticmethod
     async def get_by_user(

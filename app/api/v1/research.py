@@ -132,13 +132,15 @@ async def get_research_status(session_id: str):
             )
         
         response_data = ResearchStatusResponse(
-            session_id=session.session_id,
-            status=session.status.value,
-            progress=session.progress or 0,
-            current_phase=session.current_phase,
+            research_id=session.research_id,
             query=session.query,
-            created_at=session.created_at,
-            agent_statuses=session.agent_statuses or {}
+            status=session.status.value,
+            current_stage=session.current_phase or session.current_stage,
+            progress=session.progress or 0,
+            agents=session.agent_statuses or {},
+            sources_found=session.sources_count or {"total": session.total_sources or 0},
+            estimated_completion=None,
+            error=session.error_message or session.error
         )
         
         return APIResponse(
@@ -194,17 +196,29 @@ async def get_research_results(session_id: str):
                 }
             )
         
-        # Build results response
+        from app.database.repositories import SourceRepository, FindingRepository, ReportRepository
+        from app.models import SourceResponse, FindingResponse, ReportResponse
+
+        sources = await SourceRepository.get_by_research(session.research_id)
+        findings = await FindingRepository.get_by_research(session.research_id)
+        report = await ReportRepository.get_by_research(session.research_id)
+
         results = ResearchResultsResponse(
-            session_id=session.session_id,
-            status=session.status.value,
+            research_id=session.research_id,
             query=session.query,
-            report=session.final_report or {},
-            sources_count=session.sources_count or {},
-            findings_count=session.findings_count or 0,
-            confidence_summary=session.confidence_summary or {},
+            status=session.status.value,
             created_at=session.created_at,
-            completed_at=session.completed_at
+            completed_at=session.completed_at,
+            processing_time=session.get_processing_time_formatted(),
+            quality_score=session.quality_score,
+            report=ReportResponse.model_validate(report) if report else None,
+            findings=[FindingResponse.model_validate(f) for f in findings],
+            sources=[SourceResponse.model_validate(s) for s in sources],
+            metadata={
+                "sources_count": session.sources_count or {"total": len(sources)},
+                "findings_count": session.findings_count or len(findings),
+                "confidence_summary": session.confidence_summary or {}
+            }
         )
         
         return APIResponse(
@@ -741,7 +755,7 @@ def _build_markdown_export(session, report: dict, include_sources: bool, include
     
     if include_metadata:
         lines.append("---")
-        lines.append(f"**Session ID:** {session.session_id}")
+        lines.append(f"**Session ID:** {session.research_id}")
         lines.append(f"**Created:** {session.created_at.strftime('%Y-%m-%d %H:%M:%S') if session.created_at else 'N/A'}")
         lines.append(f"**Completed:** {session.completed_at.strftime('%Y-%m-%d %H:%M:%S') if session.completed_at else 'N/A'}")
         if session.sources_count:

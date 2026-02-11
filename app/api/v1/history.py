@@ -112,17 +112,17 @@ async def get_session_details(session_id: str):
             "query": session.query,
             "status": session.status.value,
             "progress": session.progress or 0,
-            "current_phase": session.current_stage,
+            "current_phase": session.current_phase or session.current_stage,
             "research_mode": session.research_mode.value if session.research_mode else "auto",
             "focus_areas": session.focus_areas or [],
             "source_preferences": session.source_preferences or [],
             "created_at": session.created_at.isoformat() if session.created_at else None,
             "completed_at": session.completed_at.isoformat() if session.completed_at else None,
-            "agent_statuses": session.agent_states or {},
+            "agent_statuses": session.agent_statuses or {},
             "sources_count": session.sources_count or {},
-            "findings_count": session.total_findings or 0,
+            "findings_count": session.findings_count or session.total_findings or 0,
             "confidence_summary": session.confidence_summary or {},
-            "error_message": session.error
+            "error_message": session.error_message or session.error
         }
         
         return APIResponse(
@@ -156,7 +156,7 @@ async def delete_session(session_id: str):
             )
         
         # Delete the session
-        await ResearchRepository.delete_session(session_id)
+        await ResearchRepository.delete(session_id)
         
         return APIResponse(
             status=200,
@@ -196,11 +196,8 @@ async def get_session_sources(
         
         skip = (page - 1) * limit
         
-        sources = await SourceRepository.get_by_session(
-            session_id=session_id,
-            skip=skip,
-            limit=limit
-        )
+        all_sources = await SourceRepository.get_by_research(research_id=session_id)
+        sources = all_sources[skip:skip + limit]
         
         source_list = [
             {
@@ -210,7 +207,7 @@ async def get_session_sources(
                 "api_source": s.api_source,
                 "source_type": s.source_type.value if s.source_type else None,
                 "credibility_score": s.credibility_score,
-                "snippet": s.snippet[:200] if s.snippet else None
+                "snippet": (s.content_preview or "")[:200] if s.content_preview else None
             }
             for s in sources
         ]
@@ -257,11 +254,8 @@ async def get_session_findings(
         
         skip = (page - 1) * limit
         
-        findings = await FindingRepository.get_by_session(
-            session_id=session_id,
-            skip=skip,
-            limit=limit
-        )
+        all_findings = await FindingRepository.get_by_research(research_id=session_id)
+        findings = all_findings[skip:skip + limit]
         
         finding_list = [
             {
@@ -311,13 +305,13 @@ async def get_session_report(session_id: str, format: str = Query("markdown")):
                 detail=f"Research session {session_id} not found"
             )
         
-        report = await ReportRepository.get_by_session(session_id)
+        report = await ReportRepository.get_by_research(research_id=session_id)
         
         if not report:
             return APIResponse(
-                success=False,
+                status=200,
                 message="Report not yet generated",
-                data={"session_id": session_id, "status": session.status.value}
+                data={"session_id": session_id, "report_status": session.status.value}
             )
         
         # Return content based on requested format

@@ -219,7 +219,7 @@ async def send_approval_request(
     await manager.broadcast_to_session(session_id, message)
 
 
-@router.websocket("/ws/{session_id}")
+@router.websocket("/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """
     WebSocket endpoint for research session updates.
@@ -297,7 +297,7 @@ async def handle_client_message(session_id: str, message: dict):
                 "session_id": session_id,
                 "status": session.status.value,
                 "progress": session.progress or 0,
-                "phase": session.current_phase,
+                "phase": session.current_phase or session.current_stage,
                 "agent_statuses": session.agent_statuses or {},
                 "timestamp": datetime.utcnow().isoformat()
             })

@@ -260,6 +260,18 @@ class ResearchSession(Document):
     status: ResearchStatus = ResearchStatus.INITIALIZED
     current_stage: Optional[str] = None
     progress: int = Field(default=0, ge=0, le=100)
+
+    # Legacy/current API fields
+    current_phase: Optional[str] = None
+    agent_statuses: Dict[str, Dict[str, Any]] = Field(
+        default_factory=lambda: {
+            "user_proxy": {"status": "idle", "progress": 0, "output": None},
+            "researcher": {"status": "idle", "progress": 0, "output": None},
+            "analyst": {"status": "idle", "progress": 0, "output": None},
+            "fact_checker": {"status": "idle", "progress": 0, "output": None},
+            "report_generator": {"status": "idle", "progress": 0, "output": None}
+        }
+    )
     
     # Agent states
     agent_states: Dict[str, Dict[str, Any]] = Field(
@@ -276,11 +288,18 @@ class ResearchSession(Document):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     
     # Processing metadata
     processing_time_ms: Optional[int] = None
     total_sources: int = 0
     total_findings: int = 0
+
+    # Aggregated counts and summaries
+    sources_count: Dict[str, int] = Field(default_factory=dict)
+    findings_count: int = 0
+    confidence_summary: Dict[str, Any] = Field(default_factory=dict)
+    final_report: Optional[Dict[str, Any]] = None
     
     # Quality metrics
     quality_score: Optional[float] = Field(default=None, ge=0.0, le=5.0)
@@ -288,6 +307,7 @@ class ResearchSession(Document):
     
     # Error tracking
     error: Optional[str] = None
+    error_message: Optional[str] = None
     
     # References to related documents (stored as IDs)
     source_ids: List[str] = Field(default_factory=list)

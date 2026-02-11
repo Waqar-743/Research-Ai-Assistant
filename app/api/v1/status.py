@@ -32,11 +32,11 @@ async def get_session_status(session_id: str):
         
         # Build status response
         status_data = {
-            "session_id": session.session_id,
+            "session_id": session.research_id,
             "query": session.query,
             "status": session.status.value,
             "progress": session.progress or 0,
-            "current_phase": session.current_phase,
+            "current_phase": session.current_phase or session.current_stage,
             "research_mode": session.research_mode.value if session.research_mode else "auto",
             "agent_statuses": session.agent_statuses or {
                 "user_proxy": {"status": "idle", "progress": 0},
@@ -47,7 +47,7 @@ async def get_session_status(session_id: str):
             },
             "created_at": session.created_at.isoformat() if session.created_at else None,
             "updated_at": session.updated_at.isoformat() if session.updated_at else None,
-            "error_message": session.error_message
+            "error_message": session.error_message or session.error
         }
         
         return APIResponse(
@@ -112,7 +112,7 @@ async def get_agent_statuses(session_id: str):
             data={
                 "session_id": session_id,
                 "agents": agents,
-                "current_phase": session.current_phase
+                "current_phase": session.current_phase or session.current_stage
             }
         )
         

@@ -203,7 +203,7 @@ class ResearchService:
                 # Update agent status
                 if session.agent_statuses is None:
                     session.agent_statuses = {}
-                
+
                 session.agent_statuses[agent_name] = {
                     "status": status,
                     "progress": progress,
@@ -251,15 +251,17 @@ class ResearchService:
             sources = results.get("sources", [])
             for source_data in sources[:200]:  # Limit to 200 sources
                 source = Source(
-                    session_id=session_id,
+                    research_id=session_id,
                     title=source_data.get("title", ""),
                     url=source_data.get("url", ""),
-                    snippet=source_data.get("snippet", ""),
+                    content_preview=source_data.get("snippet", "") or source_data.get("description", ""),
+                    full_content=source_data.get("content", "") or None,
                     api_source=source_data.get("api_source", "unknown"),
                     source_type=self._map_source_type(source_data.get("source_type")),
-                    credibility_score=source_data.get("credibility_score"),
-                    published_date=source_data.get("published_date"),
-                    raw_data=source_data
+                    credibility_score=source_data.get("credibility_score", 0.5),
+                    author=source_data.get("author"),
+                    published_at=source_data.get("published_at"),
+                    metadata=source_data
                 )
                 await source.insert()
             
@@ -268,15 +270,18 @@ class ResearchService:
             # Save findings
             findings = results.get("findings", [])
             for finding_data in findings:
+                content = finding_data.get("content") or finding_data.get("statement") or ""
+                title = finding_data.get("title") or (content[:80] + "..." if len(content) > 80 else content)
                 finding = Finding(
-                    session_id=session_id,
-                    title=finding_data.get("title", ""),
-                    content=finding_data.get("content", ""),
+                    research_id=session_id,
+                    title=title,
+                    content=content,
                     finding_type=self._map_finding_type(finding_data.get("finding_type")),
-                    confidence_score=finding_data.get("confidence_score"),
+                    confidence_score=finding_data.get("confidence_score", 0.5),
                     verified=finding_data.get("verified", False),
-                    source_refs=finding_data.get("source_refs", []),
-                    related_patterns=finding_data.get("related_patterns", [])
+                    supporting_sources=finding_data.get("supporting_sources", []) or finding_data.get("source_refs", []),
+                    contradicting_sources=finding_data.get("contradicting_sources", []),
+                    agent_generated_by=finding_data.get("agent_generated_by", "fact_checker")
                 )
                 await finding.insert()
             
@@ -286,7 +291,7 @@ class ResearchService:
             report_data = results.get("report", {})
             if report_data:
                 report = Report(
-                    session_id=session_id,
+                    research_id=session_id,
                     title=report_data.get("title", ""),
                     summary=report_data.get("summary", ""),
                     markdown_content=report_data.get("markdown_content", ""),
@@ -312,9 +317,10 @@ class ResearchService:
             "academic": SourceType.ACADEMIC,
             "news": SourceType.NEWS,
             "official": SourceType.OFFICIAL,
-            "wiki": SourceType.WIKI,
+            "wikipedia": SourceType.WIKIPEDIA,
+            "wiki": SourceType.WIKIPEDIA,
             "blog": SourceType.BLOG,
-            "social": SourceType.SOCIAL,
+            "social": SourceType.OTHER,
             "other": SourceType.OTHER
         }
         return mapping.get(source_type.lower(), SourceType.OTHER)
@@ -327,7 +333,7 @@ class ResearchService:
         mapping = {
             "fact": FindingType.FACT,
             "statistic": FindingType.STATISTIC,
-            "quote": FindingType.QUOTE,
+            "definition": FindingType.DEFINITION,
             "insight": FindingType.INSIGHT,
             "claim": FindingType.CLAIM
         }
