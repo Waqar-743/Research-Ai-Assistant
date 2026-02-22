@@ -72,7 +72,13 @@ Your verification must be thorough and honest."""
         findings = context.get("organized_findings", [])
         insights = context.get("key_insights", [])
         
-        logger.info(f"Fact-Checker starting verification for: {query}")
+        # If no organized findings, try to use raw findings or consolidated findings
+        if not findings:
+            findings = context.get("consolidated_findings", [])
+        if not findings:
+            findings = context.get("raw_findings", [])
+        
+        logger.info(f"Fact-Checker starting verification for: {query} ({len(findings)} findings, {len(sources)} sources)")
         
         try:
             await self._set_status(AgentStatus.IN_PROGRESS)
@@ -80,7 +86,7 @@ Your verification must be thorough and honest."""
             
             # Step 1: Check source credibility
             await self._update_progress(10, "Assessing source credibility...")
-            source_credibility = await self._check_sources_credibility(sources[:50])
+            source_credibility = await self._check_sources_credibility(sources[:30])
             
             # Step 2: Validate findings
             await self._update_progress(30, "Validating findings against sources...")
@@ -184,7 +190,7 @@ Your verification must be thorough and honest."""
                 try:
                     verification = await self.validation_tools.cross_reference_claim(
                         claim=content,
-                        sources=sources[:15]  # Limit sources for efficiency
+                        sources=sources[:25]  # Cross-reference against more sources for better verification
                     )
                     
                     validated.append({

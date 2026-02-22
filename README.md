@@ -6,69 +6,64 @@ A sophisticated FastAPI backend that leverages multiple AI agents to conduct com
 
 ##  Features
 
-- **Multi-Agent Orchestration**: 5 specialized AI agents working in concert
-- **Real-time Updates**: WebSocket support for live progress tracking
-- **Multiple Data Sources**: Google, NewsAPI, ArXiv, PubMed, Wikipedia
-- **Quality Assurance**: Built-in fact-checking and source verification
-- **Report Generation**: Markdown, HTML, and PDF formats
-- **Citation Management**: APA, MLA, Chicago styles
-- **Configurable Research Mode**: Auto (hands-free) or Supervised (human-in-the-loop)
+- **Professional UI Dashboard**: Modern, glassmorphism-inspired research dashboard with pipeline visualization.
+- **Multi-Agent Orchestration**: 5 specialized AI agents working in concert (User Proxy, Researcher, Analyst, Fact-Checker, Report Generator).
+- **Advanced Quality Pipeline**: 
+  - **Relevance Filtering**: Multi-stage (Keyword + LLM) filtering to eliminate off-topic sources.
+  - **Dynamic Deduplication**: Intelligent merging of overlapping findings.
+  - **Enhanced Fact-Checking**: Rigorous verification against 25+ independent sources.
+- **Real-time Progress**: WebSocket support with fallbacks for live pipeline tracking.
+- **Multiple Data Sources**: Google, SerpAPI, NewsAPI, ArXiv, PubMed, Wikipedia.
+- **Rich Report Generation**: Professional Markdown, HTML, and PDF formats with automatic TOC.
+- **Citation Management**: APA, MLA, Chicago styles with dynamic reference generation.
+- **Configurable Research Mode**: Auto (autonomous) or Supervised (human approval checkpoints).
 
 ## 🤖 Agent Architecture
 
-| Agent | Role | LLM Model |
-|-------|------|-----------|
-| **User Proxy** | Query clarification, human oversight | DeepSeek Chat |
-| **Researcher** | Search and information gathering | DeepSeek Chat |
-| **Analyst** | Information synthesis and pattern detection | Claude Sonnet |
-| **Fact-Checker** | Validation and verification | GPT-4o |
-| **Report Generator** | Report writing and formatting | Claude Sonnet |
+| Agent | Role | Capabilities |
+|-------|------|--------------|
+| **User Proxy** | Orchestrator | Query clarification, focus area refinement, human oversight. |
+| **Researcher** | Data Gatherer | Parallel search execution, multi-stage relevance filtering (Keyword + LLM). |
+| **Analyst** | Synthesis | Pattern identification, contradiction detection, trend analysis. |
+| **Fact-Checker** | Auditor | Statistics verification, source credibility assessment, bias detection. |
+| **Report Generator** | Author | Executive summary creation, citations, formatting (MD, HTML, PDF). |
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
 - Python 3.11+
-- MongoDB 7.0+ (or Docker)
-- API Keys:
-  - OpenRouter API Key
-  - Google Custom Search API Key
-  - NewsAPI Key (optional)
+- MongoDB 7.0+ (Local or Docker)
+- OpenRouter API Key
 
-### Installation
+### Installation & Run
 
-1. **Clone the repository**
+1. **Clone & Setup**
    ```bash
    git clone <repository-url>
    cd Research-Assistant
-   ```
-
-2. **Create virtual environment**
-   ```bash
    python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. **Install dependencies**
-   ```bash
+   .\venv\Scripts\activate  # Windows
    pip install -r requirements.txt
    ```
 
-4. **Configure environment**
+2. **Configure environment**
    ```bash
    cp .env.example .env
-   # Edit .env with your API keys and configuration
+   # Edit .env with your OpenRouter API Key
    ```
 
-5. **Start MongoDB** (using Docker)
+3. **Run Backend**
    ```bash
-   docker compose up mongodb -d
+   python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
    ```
 
-6. **Run the application**
+4. **Run Frontend**
    ```bash
-   uvicorn app.main:app --reload
+   # In a new terminal
+   python -m http.server 5500 --directory frontend
    ```
+   Open [http://localhost:5500](http://localhost:5500) to start researching.
 
 ### Using Docker
 

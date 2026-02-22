@@ -460,12 +460,15 @@ class FormattingTools:
 
 The summary should:
 1. Be {max_length} characters or less
-2. Highlight key findings and conclusions
-3. Be written in clear, professional language
-4. Include the most important insights
+2. Start with the main conclusion or most important finding
+3. Highlight 2-3 key findings with specific data points or statistics
+4. Mention the scope of research (number of sources, types of sources)
+5. Be written in clear, professional language
+6. NEVER use placeholder text like [topic] or [finding]
+7. Include the confidence level of the findings
 
 REPORT CONTENT:
-{content[:4000]}
+{content[:5000]}
 
 Write the executive summary:"""
         
@@ -504,14 +507,14 @@ Write the executive summary:"""
         """
         if not findings:
             return [{
-                "title": "No Findings",
-                "content": "No significant findings were identified for this research query.",
+                "title": "Research Summary",
+                "content": "The research process analyzed available sources but found limited directly applicable findings. This section summarizes what information was gathered and identifies areas that require further investigation.",
                 "order": 1
             }]
         
         # Group findings by type or theme
         findings_text = "\n".join([
-            f"- {f.get('title', 'Finding')}: {f.get('content', '')[:200]}"
+            f"- {f.get('title', 'Finding')}: {f.get('content', '')[:250]}"
             for f in findings[:20]
         ])
         
@@ -523,15 +526,18 @@ FINDINGS:
 {findings_text}
 
 Create 3-6 thematic sections that logically organize these findings.
-Each section should have a clear title and combine related findings.
+Each section should:
+- Have a clear, descriptive title (NOT generic like "Key Findings" — make it specific to the topic)
+- Combine related findings into a coherent narrative
+- Never use placeholder text
 
 Respond in JSON format:
 {{
     "sections": [
         {{
-            "title": "Section Title",
-            "summary": "Brief section summary",
-            "finding_indices": [indices of findings that belong here],
+            "title": "Specific Descriptive Section Title",
+            "summary": "Brief summary of what this section covers",
+            "finding_indices": [0, 1, 2],
             "order": 1
         }}
     ]
@@ -573,9 +579,9 @@ Respond in JSON format:
         except Exception as e:
             logger.error(f"Section structuring failed: {e}")
         
-        # Fallback: simple structure
+        # Fallback: create structured sections from findings
         return [{
-            "title": "Key Findings",
+            "title": f"Research Findings: {query[:50]}",
             "content": "\n\n".join([
                 f"**{f.get('title', 'Finding')}**\n{f.get('content', '')}"
                 for f in findings

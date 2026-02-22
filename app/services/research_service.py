@@ -72,7 +72,7 @@ class ResearchService:
         # Update session status
         session = await ResearchRepository.get_by_session_id(session_id)
         if session:
-            session.status = ResearchStatus.IN_PROGRESS
+            session.status = ResearchStatus.RUNNING
             session.updated_at = datetime.utcnow()
             await session.save()
         

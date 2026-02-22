@@ -174,24 +174,27 @@ async def get_research_results(session_id: str):
                 detail=f"Research session {session_id} not found"
             )
         
-        if session.status == ResearchStatus.IN_PROGRESS:
+        status_value = session.status.value if hasattr(session.status, "value") else str(session.status)
+        normalized_status = "running" if status_value == "in_progress" else status_value
+
+        if status_value in {"running", "in_progress"}:
             return APIResponse(
-                success=False,
+                status=200,
                 message="Research is still in progress",
                 data={
                     "session_id": session_id,
-                    "status": session.status.value,
+                    "status": normalized_status,
                     "progress": session.progress
                 }
             )
         
-        if session.status == ResearchStatus.FAILED:
+        if status_value == "failed":
             return APIResponse(
-                success=False,
+                status=200,
                 message="Research failed",
                 data={
                     "session_id": session_id,
-                    "status": session.status.value,
+                    "status": normalized_status,
                     "error": session.error_message
                 }
             )
@@ -206,7 +209,7 @@ async def get_research_results(session_id: str):
         results = ResearchResultsResponse(
             research_id=session.research_id,
             query=session.query,
-            status=session.status.value,
+            status=normalized_status,
             created_at=session.created_at,
             completed_at=session.completed_at,
             processing_time=session.get_processing_time_formatted(),
@@ -254,11 +257,13 @@ async def cancel_research(
                 detail=f"Research session {session_id} not found"
             )
         
-        if session.status != ResearchStatus.IN_PROGRESS:
+        status_value = session.status.value if hasattr(session.status, "value") else str(session.status)
+        normalized_status = "running" if status_value == "in_progress" else status_value
+        if status_value not in {"running", "in_progress"}:
             return APIResponse(
-                success=False,
-                message=f"Cannot cancel session with status: {session.status.value}",
-                data={"session_id": session_id, "status": session.status.value}
+                status=200,
+                message=f"Cannot cancel session with status: {normalized_status}",
+                data={"session_id": session_id, "status": normalized_status}
             )
         
         # Cancel the research

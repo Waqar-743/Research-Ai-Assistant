@@ -26,24 +26,27 @@ class AnalystAgent(BaseAgent):
     """
     
     def __init__(self):
-        system_prompt = """You are an expert analyst who synthesizes information from multiple sources.
+        system_prompt = """You are an expert research analyst who synthesizes information from multiple sources into actionable findings.
 
 Your responsibilities:
-1. Consolidate findings from various sources into coherent themes
-2. Identify patterns, trends, and common threads
+1. Consolidate findings from various sources into coherent, well-supported themes
+2. Identify patterns, trends, and common threads with SPECIFIC EVIDENCE
 3. Detect and flag contradictions or conflicting information
-4. Extract the most important insights
+4. Extract the most important insights with concrete data
 5. Organize information in a logical, hierarchical structure
 
 Guidelines:
+- ALWAYS produce substantive analysis — never say "no findings identified"
+- Every finding must be supported by specific data, quotes, or statistics from sources
 - Be objective and balanced in your analysis
-- Weigh evidence based on source credibility
-- Clearly distinguish between facts and interpretations
-- Note areas of consensus and disagreement
-- Highlight gaps in the available information
+- Weigh evidence based on source credibility and recency
+- Clearly distinguish between established facts, emerging trends, and speculative claims
+- Quantify findings wherever possible (percentages, numbers, timeframes)
+- Highlight areas of strong consensus vs areas of debate
+- Note gaps in available information as a finding itself
 - Prioritize findings by importance and reliability
 
-Your analysis should be thorough yet accessible."""
+Your analysis MUST be substantive and data-driven. Abstract statements without evidence are unacceptable."""
         
         super().__init__(
             name="Analyst",
@@ -132,44 +135,49 @@ Your analysis should be thorough yet accessible."""
     ) -> List[Dict[str, Any]]:
         """Consolidate findings from multiple sources into unified themes."""
         
-        # Build context from sources and findings
+        # Build context from sources — use more sources for better coverage
         source_context = []
-        for i, source in enumerate(sources[:25]):
+        for i, source in enumerate(sources[:40]):
             title = source.get("title", "Untitled")
-            snippet = source.get("snippet", "")[:250]
+            snippet = source.get("snippet", "")[:300]
             source_type = source.get("source_type", "unknown")
-            source_context.append(f"[S{i+1}] ({source_type}) {title}: {snippet}")
+            author = source.get("author", "") or ", ".join(source.get("authors", [])[:2])
+            source_context.append(f"[S{i+1}] ({source_type}) {title} by {author}: {snippet}")
         
         findings_context = []
         for i, finding in enumerate(raw_findings):
             content = finding.get("content", "")
-            findings_context.append(f"[F{i+1}] {content}")
+            cred = finding.get("preliminary_credibility", "unknown")
+            findings_context.append(f"[F{i+1}] ({cred} credibility) {content}")
         
-        prompt = f"""Consolidate these findings and sources into unified themes for the research query.
+        prompt = f"""Consolidate these sources and extracted findings into a comprehensive analysis for the research query.
 
 QUERY: {query}
 
-SOURCES:
+SOURCES ({len(source_context)} total):
 {chr(10).join(source_context)}
 
-RAW FINDINGS:
-{chr(10).join(findings_context)}
+EXTRACTED FINDINGS ({len(findings_context)} total):
+{chr(10).join(findings_context) if findings_context else 'No pre-extracted findings available — analyze directly from sources.'}
 
-Group related information into 5-8 consolidated findings. For each:
-1. Create a clear, descriptive title
-2. Write a comprehensive summary combining related information
-3. List supporting source references
-4. Assess the finding type (fact, insight, statistic, claim)
+INSTRUCTIONS:
+- Group related information into 4-8 consolidated findings
+- EVERY finding must include specific data points, statistics, or concrete evidence from the sources
+- If sources contain relevant data, extract and synthesize it — do NOT say "no findings"
+- If sources are tangential, still identify what they reveal about the broader topic
+- Include both areas of consensus and areas of debate/contradiction
+- Rate confidence based on number and quality of supporting sources
 
 Respond in JSON format:
 {{
     "consolidated_findings": [
         {{
-            "title": "Finding title",
-            "content": "Comprehensive summary",
-            "finding_type": "fact|insight|statistic|claim",
+            "title": "Clear descriptive title of the finding",
+            "content": "Comprehensive summary with SPECIFIC data points, statistics, and evidence from sources. Must be 2-4 sentences minimum.",
+            "finding_type": "fact|insight|statistic|trend|debate",
             "source_refs": ["S1", "S2"],
-            "confidence": "high|medium|low"
+            "confidence": "high|medium|low",
+            "key_data_points": ["specific stat or data point 1", "specific stat or data point 2"]
         }}
     ]
 }}"""
@@ -181,12 +189,68 @@ Respond in JSON format:
             json_match = re.search(r'\{[\s\S]*\}', response)
             if json_match:
                 data = json.loads(json_match.group())
-                return data.get("consolidated_findings", [])
+                findings = data.get("consolidated_findings", [])
+                if findings:
+                    return findings
         except Exception as e:
             logger.warning(f"Consolidation parsing failed: {e}")
         
-        # Fallback: return raw findings as-is
-        return raw_findings
+        # Fallback: if raw findings exist, restructure them
+        if raw_findings:
+            return [{
+                "title": f.get("content", "Finding")[:80],
+                "content": f.get("content", ""),
+                "finding_type": f.get("type", "insight"),
+                "source_refs": [f.get("source_refs", "")],
+                "confidence": f.get("preliminary_credibility", "medium")
+            } for f in raw_findings if f.get("content")]
+        
+        # Last resort fallback: generate findings directly from sources
+        if sources:
+            return await self._emergency_findings_from_sources(query, sources)
+        
+        return []
+    
+    async def _emergency_findings_from_sources(
+        self,
+        query: str,
+        sources: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Emergency fallback: generate findings directly from source data when other methods fail."""
+        
+        source_text = "\n".join([
+            f"- {s.get('title', 'Untitled')}: {(s.get('snippet', '') or '')[:200]}"
+            for s in sources[:30]
+        ])
+        
+        prompt = f"""Based on these sources, what can we learn about: {query}
+
+{source_text}
+
+Extract 3-5 concrete findings. Each must contain specific information from the sources.
+Respond in JSON:
+{{
+    "consolidated_findings": [
+        {{
+            "title": "Finding title",
+            "content": "Detailed finding with specific data",
+            "finding_type": "insight",
+            "source_refs": [],
+            "confidence": "medium"
+        }}
+    ]
+}}"""
+        
+        try:
+            response = await self.think(prompt)
+            json_match = re.search(r'\{[\s\S]*\}', response)
+            if json_match:
+                data = json.loads(json_match.group())
+                return data.get("consolidated_findings", [])
+        except Exception as e:
+            logger.warning(f"Emergency findings extraction failed: {e}")
+        
+        return []
     
     async def _identify_patterns(
         self,
@@ -208,20 +272,22 @@ FINDINGS:
 {findings_text}
 
 Identify 3-5 key patterns or themes. For each pattern:
-1. Name the pattern clearly
-2. Explain how it manifests across findings
-3. Assess how strong/consistent the pattern is
+1. Name the pattern clearly and specifically (not generic)
+2. Explain HOW it manifests with specific examples and data from findings
+3. Assess how strong/consistent the evidence is
 4. List which findings support this pattern
+
+IMPORTANT: Every pattern must be grounded in specific evidence from the findings above. Do not invent patterns not supported by the data.
 
 Respond in JSON:
 {{
     "patterns": [
         {{
-            "name": "Pattern name",
-            "description": "How this pattern appears",
+            "name": "Specific pattern name",
+            "description": "How this pattern appears, with specific evidence and data points",
             "strength": "strong|moderate|weak",
             "supporting_findings": [0, 1, 2],
-            "examples": ["specific example 1", "example 2"]
+            "examples": ["specific example with data 1", "specific example with data 2"]
         }}
     ]
 }}"""
@@ -310,11 +376,13 @@ Patterns Identified:
 {context}
 
 Each insight should:
-1. Be a clear, actionable statement
-2. Represent a key takeaway from the research
-3. Be supported by multiple findings
-4. Provide value to someone researching this topic
+1. Be a clear, specific, actionable statement (NOT generic or vague)
+2. Include specific data, statistics, or evidence that supports it
+3. Be supported by multiple findings 
+4. Provide genuine value to someone researching this topic
+5. NEVER use placeholder text like [topic] or [finding]
 
+Write each insight as a complete, self-contained statement with evidence.
 List the insights in order of importance, one per line."""
         
         try:

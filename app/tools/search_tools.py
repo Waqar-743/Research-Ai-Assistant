@@ -254,12 +254,16 @@ class SearchTools:
         results = []
         
         try:
+            # Limit to last 30 days to avoid stale/irrelevant results
+            from_date = (datetime.utcnow() - timedelta(days=30)).strftime('%Y-%m-%d')
+            
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 params = {
                     "q": query,
                     "language": language,
                     "sortBy": sort_by,
                     "pageSize": min(num_results, 100),
+                    "from": from_date,
                     "apiKey": settings.newsapi_key
                 }
                 

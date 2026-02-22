@@ -116,7 +116,7 @@ class AgentOrchestrator:
         query: str,
         focus_areas: Optional[List[str]] = None,
         source_preferences: Optional[List[str]] = None,
-        max_sources: int = 300,
+        max_sources: int = 50,
         research_mode: str = "auto",
         report_format: str = "markdown",
         citation_style: str = "APA"
@@ -237,9 +237,24 @@ class AgentOrchestrator:
             )
             
             if fact_checker_result.get("status") == "failed":
-                # Non-critical failure - continue with unverified
+                # Non-critical failure - pass through unverified findings so report still has data
                 logger.warning("Fact-checking failed, continuing with unverified data")
                 self.errors.append("Fact-checking incomplete")
+                
+                # CRITICAL: Still pass findings through so report generator has data
+                unverified_findings = final_context.get("organized_findings", [])
+                for f in unverified_findings:
+                    f["verified"] = False
+                    f["confidence_score"] = 0.5
+                    f["verification_verdict"] = "unverified"
+                final_context["validated_findings"] = unverified_findings
+                final_context["confidence_summary"] = {
+                    "overall_confidence": 0.5,
+                    "confidence_level": "medium",
+                    "verified_findings": 0,
+                    "total_findings": len(unverified_findings),
+                    "note": "Fact-checking failed; findings are unverified"
+                }
             else:
                 self.results["fact_checker"] = fact_checker_result
                 

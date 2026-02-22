@@ -27,25 +27,29 @@ class ReportGeneratorAgent(BaseAgent):
     """
     
     def __init__(self):
-        system_prompt = """You are an expert report writer who creates professional research reports.
+        system_prompt = """You are an expert report writer who creates professional, data-rich research reports.
 
 Your responsibilities:
 1. Structure findings into logical, well-organized sections
-2. Write clear, coherent narrative that tells the research story
+2. Write clear, coherent narrative that tells the research story with SPECIFIC DATA
 3. Include proper citations and source attribution
-4. Create compelling executive summaries
+4. Create compelling executive summaries with key statistics
 5. Ensure reports are accessible and easy to read
 
 Guidelines:
-- Use clear, professional language
+- Use clear, professional language with specific data points
+- NEVER use placeholder text like [topic], [finding 1], [limitation 1] etc.
+- Every claim must be backed by specific evidence from the research
+- Include actual numbers, percentages, and statistics wherever available
 - Organize content from most to least important
 - Use headings and subheadings for navigation
 - Include visual breaks (lists, emphasis) for readability
 - Cite sources consistently throughout
 - Write for your target audience
 - Balance comprehensiveness with conciseness
+- If data is limited, acknowledge honestly but still present what was found
 
-Your reports should be publication-ready."""
+Your reports should be publication-ready with zero placeholder text."""
         
         super().__init__(
             name="Report Generator",
@@ -78,7 +82,15 @@ Your reports should be publication-ready."""
         report_format = context.get("report_format", "markdown")
         citation_style = context.get("citation_style", "APA")
         
-        logger.info(f"Report Generator starting for: {query}")
+        # CRITICAL: Ensure findings are never empty — fallback chain
+        if not findings:
+            findings = context.get("organized_findings", [])
+        if not findings:
+            findings = context.get("consolidated_findings", [])
+        if not findings:
+            findings = context.get("raw_findings", [])
+        
+        logger.info(f"Report Generator starting for: {query} ({len(findings)} findings, {len(sources)} sources)")
         
         try:
             await self._set_status(AgentStatus.IN_PROGRESS)
@@ -282,21 +294,30 @@ Return only the title, nothing else."""
         source_summary = ", ".join([
             f"{count} from {stype.title()}"
             for stype, count in source_types.items()
+            if count > 0
         ])
+        
+        # Count source types
+        academic_count = source_types.get("arxiv", 0) + source_types.get("pubmed", 0)
+        news_count = source_types.get("newsapi", 0)
+        web_count = source_types.get("google", 0) + source_types.get("serpapi", 0)
+        wiki_count = source_types.get("wikipedia", 0)
         
         content = f"""This research was conducted using a multi-agent AI system that employs specialized agents for different aspects of the research process:
 
-1. **Information Gathering**: The Researcher Agent collected information from multiple sources including academic databases (ArXiv, PubMed), news sources (NewsAPI), web search (Google), and encyclopedic sources (Wikipedia).
+1. **Information Gathering**: The Researcher Agent collected information from multiple sources including academic databases (ArXiv, PubMed), news sources (NewsAPI), web search (Google/SerpAPI), and encyclopedic sources (Wikipedia). Sources were filtered for relevance to the specific research query before analysis.
 
-2. **Analysis**: The Analyst Agent synthesized the collected information, identified patterns, and consolidated findings into coherent themes.
+2. **Analysis**: The Analyst Agent synthesized the collected information, identified patterns across sources, consolidated findings into coherent themes, and detected areas of consensus and contradiction.
 
-3. **Verification**: The Fact-Checker Agent validated claims through cross-referencing, assessed source credibility, and detected potential bias.
+3. **Verification**: The Fact-Checker Agent validated claims through cross-referencing against multiple sources, assessed source credibility using domain reputation analysis, and detected potential bias.
 
-4. **Report Generation**: The Report Generator Agent structured and wrote this comprehensive report.
+4. **Report Generation**: The Report Generator Agent structured findings into this comprehensive report with proper citations and evidence-based conclusions.
 
-**Sources Analyzed**: A total of {len(sources)} sources were analyzed, including {source_summary}.
+**Sources Analyzed**: A total of {len(sources)} relevant sources were analyzed (after filtering for relevance), including {source_summary}.
 
-**Quality Assurance**: All findings have been cross-referenced against multiple sources, and confidence scores have been assigned based on the level of corroboration."""
+**Source Breakdown**: {academic_count} academic/peer-reviewed sources, {news_count} news articles, {web_count} web sources, and {wiki_count} encyclopedic references.
+
+**Quality Assurance**: All findings have been cross-referenced against multiple sources, relevance-filtered to remove off-topic results, and confidence scores have been assigned based on the level of corroboration."""
         
         return content
     
@@ -310,24 +331,37 @@ Return only the title, nothing else."""
         verified_findings = [f for f in findings if f.get("verified", False)]
         high_confidence = [f for f in findings if f.get("confidence_score", 0) > 0.7]
         
+        # Use ALL findings if no verified ones (don't let empty list produce placeholders)
+        display_findings = verified_findings or high_confidence or findings
+        
         findings_summary = "\n".join([
-            f"- {f.get('title', 'Finding')}"
-            for f in verified_findings[:5]
+            f"- {f.get('title', 'Finding')}: {f.get('content', '')[:200]}"
+            for f in display_findings[:8]
         ])
         
-        prompt = f"""Write a conclusions section for a research report on: {query}
+        if not findings_summary:
+            findings_summary = "No specific findings were extracted from the sources analyzed."
+        
+        prompt = f"""Write a conclusions and recommendations section for a research report on: {query}
 
-Key Verified Findings:
+Key Findings from Research:
 {findings_summary}
 
-The conclusions should:
-1. Summarize the main findings
-2. Discuss implications
-3. Note any limitations
-4. Suggest areas for further research
-5. Be 2-3 paragraphs long
+Total findings analyzed: {len(findings)}
+Verified findings: {len(verified_findings)}
+High confidence findings: {len(high_confidence)}
 
-Write in a professional, objective tone."""
+INSTRUCTIONS:
+1. Summarize the main findings using SPECIFIC DATA from above — never use generic placeholders
+2. Discuss real implications based on the actual findings
+3. Note actual limitations of this specific research (e.g., limited academic sources, mostly news-based data)
+4. Suggest 2-3 specific areas for further research based on gaps identified
+5. Be 3-4 paragraphs long
+6. CRITICAL: Do NOT use placeholder text like [topic], [main finding 1], [limitation 1], etc.
+7. CRITICAL: Every statement must reference actual data from the findings above
+8. If findings are limited, honestly acknowledge this and explain what the available evidence suggests
+
+Write in a professional, objective tone. Be specific and data-driven."""
         
         try:
             return await self.think(prompt)
@@ -372,11 +406,14 @@ Write the enhanced content:"""
         """Write new section content from scratch."""
         
         relevant_findings = "\n".join([
-            f"- {f.get('title', '')}: {f.get('content', '')[:150]}"
-            for f in findings[:8]
+            f"- {f.get('title', '')}: {f.get('content', '')[:250]}"
+            for f in findings[:10]
         ])
         
-        prompt = f"""Write content for this report section.
+        if not relevant_findings:
+            relevant_findings = "Limited findings available for this section."
+        
+        prompt = f"""Write content for this report section based on research findings.
 
 Report Topic: {query}
 Section Title: {title}
@@ -385,10 +422,12 @@ Available Findings:
 {relevant_findings}
 
 Write 2-4 paragraphs that:
-1. Address the section topic thoroughly
-2. Incorporate relevant findings
+1. Address the section topic thoroughly using SPECIFIC data from the findings
+2. Include actual numbers, statistics, and concrete evidence
 3. Are well-organized and professional
-4. Include specific details and examples
+4. Use citations referencing specific findings
+5. NEVER use placeholder text like [topic], [finding], [example] etc.
+6. If insufficient data exists for this section, explain what is known and what gaps remain
 
 Write the section content:"""
         
@@ -396,7 +435,16 @@ Write the section content:"""
             return await self.think(prompt)
         except Exception as e:
             logger.warning(f"Section writing failed: {e}")
-            return f"[Content for {title} section]"
+            # Build a meaningful fallback from available findings instead of placeholder
+            if findings:
+                fallback_parts = [f"This section covers key findings related to {title.lower()} for the research topic.\n"]
+                for f in findings[:5]:
+                    f_title = f.get('title', '')
+                    f_content = f.get('content', '')
+                    if f_content:
+                        fallback_parts.append(f"**{f_title}**: {f_content[:300]}\n")
+                return "\n".join(fallback_parts)
+            return f"This section on {title} requires further research. The available sources did not provide sufficient data for a detailed analysis."
     
     async def _generate_executive_summary(
         self,

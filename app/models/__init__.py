@@ -82,10 +82,10 @@ class ResearchStartRequest(BaseModel):
         description="Preferred source types (e.g., academic, news, official)"
     )
     max_sources: int = Field(
-        default=300,
+        default=50,
         ge=10,
-        le=1000,
-        description="Maximum number of sources to collect"
+        le=500,
+        description="Maximum number of sources to collect (quality over quantity)"
     )
     report_format: ReportFormatEnum = Field(
         default=ReportFormatEnum.MARKDOWN,
@@ -108,13 +108,22 @@ class ResearchStartRequest(BaseModel):
     
     @validator('focus_areas')
     def valid_focus_areas(cls, v):
-        valid_areas = ["regulatory", "technical", "ethical", "economic", "social", "environmental"]
-        if v:
-            for area in v:
-                if area.lower() not in valid_areas:
-                    raise ValueError(f'Invalid focus area: {area}. Valid: {valid_areas}')
-            return [a.lower() for a in v]
-        return v
+        if not v:
+            return v
+
+        normalized = []
+        seen = set()
+        for area in v:
+            cleaned = area.strip().lower()
+            if not cleaned:
+                continue
+            if len(cleaned) > 50:
+                raise ValueError('Focus area entries must be 50 characters or fewer')
+            if cleaned not in seen:
+                seen.add(cleaned)
+                normalized.append(cleaned)
+
+        return normalized or None
     
     class Config:
         json_schema_extra = {
@@ -122,7 +131,7 @@ class ResearchStartRequest(BaseModel):
                 "query": "AI safety frameworks and regulations in 2026",
                 "focus_areas": ["regulatory", "technical"],
                 "source_preferences": ["academic", "news"],
-                "max_sources": 300,
+                "max_sources": 50,
                 "report_format": "markdown",
                 "citation_style": "APA",
                 "research_mode": "auto"
