@@ -79,7 +79,23 @@ class LLMTools:
                 
                 if response.status_code == 200:
                     data = response.json()
-                    content = data["choices"][0]["message"]["content"]
+                    
+                    # Safely extract content — guard against None / missing keys
+                    choices = data.get("choices")
+                    if not choices or not isinstance(choices, list) or len(choices) == 0:
+                        logger.error(f"LLM API returned no choices: {data}")
+                        raise Exception(
+                            f"LLM API returned an empty response (no choices). "
+                            f"Error detail: {data.get('error', 'unknown')}"
+                        )
+                    
+                    message = choices[0].get("message") or {}
+                    content = message.get("content")
+                    if content is None:
+                        logger.error(f"LLM API returned null content: {choices[0]}")
+                        raise Exception(
+                            "LLM API returned null content in the response."
+                        )
                     
                     # Log token usage
                     usage = data.get("usage", {})
@@ -93,7 +109,7 @@ class LLMTools:
                 else:
                     error_text = response.text
                     logger.error(f"LLM API error: {response.status_code} - {error_text}")
-                    raise Exception(f"LLM API error: {response.status_code}")
+                    raise Exception(f"LLM API error ({response.status_code}): {error_text[:200]}")
                     
         except httpx.TimeoutException:
             logger.error("LLM request timed out")
@@ -157,8 +173,17 @@ class LLMTools:
                 
                 if response.status_code == 200:
                     data = response.json()
-                    choice = data["choices"][0]
-                    message = choice["message"]
+                    
+                    choices = data.get("choices")
+                    if not choices or not isinstance(choices, list) or len(choices) == 0:
+                        logger.error(f"LLM function call returned no choices: {data}")
+                        raise Exception(
+                            f"LLM API returned an empty response (no choices). "
+                            f"Error detail: {data.get('error', 'unknown')}"
+                        )
+                    
+                    choice = choices[0]
+                    message = choice.get("message") or {}
                     
                     result = {
                         "content": message.get("content"),
@@ -168,8 +193,8 @@ class LLMTools:
                     
                     return result
                 else:
-                    logger.error(f"LLM API error: {response.status_code}")
-                    raise Exception(f"LLM API error: {response.status_code}")
+                    logger.error(f"LLM API error: {response.status_code} - {response.text[:200]}")
+                    raise Exception(f"LLM API error ({response.status_code}): {response.text[:200]}")
                     
         except Exception as e:
             logger.error(f"LLM function call failed: {e}")

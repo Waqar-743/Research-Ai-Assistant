@@ -72,7 +72,7 @@ const AgentIcon = ({
       case AgentStatus.COMPLETED:
         return 'text-emerald-400 border-emerald-400/50 bg-emerald-400/10';
       case AgentStatus.IN_PROGRESS:
-        return 'text-amber-400 border-amber-400/50 bg-amber-400/10 shadow-[0_0_20px_rgba(251,191,36,0.3)]';
+        return 'text-amber-400 border-amber-400/50 bg-amber-400/10';
       case AgentStatus.FAILED:
         return 'text-rose-400 border-rose-400/50 bg-rose-400/10';
       default:
@@ -81,23 +81,57 @@ const AgentIcon = ({
   };
 
   return (
-    <motion.div
-      animate={
-        isActive ? { scale: [1, 1.1, 1], rotate: [0, 5, -5, 0] } : {}
-      }
-      transition={{ repeat: Infinity, duration: 2 }}
-      className={`p-4 rounded-xl border-2 transition-all duration-500 relative ${getColors()}`}
-    >
-      <Icon size={32} />
+    <div className="relative">
+      {/* Outer pulsing ring for active agent */}
       {isActive && (
+        <>
+          <motion.div
+            className="absolute -inset-3 rounded-2xl border-2 border-amber-400/40"
+            animate={{ scale: [1, 1.18, 1], opacity: [0.6, 0, 0.6] }}
+            transition={{ repeat: Infinity, duration: 2, ease: 'easeInOut' }}
+          />
+          <motion.div
+            className="absolute -inset-1.5 rounded-xl border border-amber-400/30"
+            animate={{ scale: [1, 1.08, 1], opacity: [0.8, 0.2, 0.8] }}
+            transition={{ repeat: Infinity, duration: 1.4, ease: 'easeInOut' }}
+          />
+          {/* Glow backdrop */}
+          <motion.div
+            className="absolute -inset-4 rounded-2xl bg-amber-400/10 blur-xl -z-10"
+            animate={{ opacity: [0.3, 0.7, 0.3] }}
+            transition={{ repeat: Infinity, duration: 2, ease: 'easeInOut' }}
+          />
+        </>
+      )}
+
+      {/* Completed checkmark flash */}
+      {status === AgentStatus.COMPLETED && (
         <motion.div
-          layoutId="active-glow"
-          className="absolute inset-0 rounded-xl bg-amber-400/20 blur-xl -z-10"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
+          className="absolute -inset-2 rounded-xl bg-emerald-400/20 blur-lg -z-10"
+          initial={{ opacity: 0, scale: 0.5 }}
+          animate={{ opacity: [0, 0.8, 0.3], scale: [0.5, 1.2, 1] }}
+          transition={{ duration: 0.6 }}
         />
       )}
-    </motion.div>
+
+      <motion.div
+        animate={
+          isActive
+            ? { scale: [1, 1.08, 1], rotate: [0, 3, -3, 0] }
+            : status === AgentStatus.COMPLETED
+              ? { scale: 1 }
+              : {}
+        }
+        transition={
+          isActive
+            ? { repeat: Infinity, duration: 2.5, ease: 'easeInOut' }
+            : { duration: 0.4 }
+        }
+        className={`p-4 rounded-xl border-2 transition-all duration-500 relative ${getColors()}`}
+      >
+        <Icon size={32} />
+      </motion.div>
+    </div>
   );
 };
 
@@ -689,99 +723,152 @@ ${report.sources?.length ? `<h2>Sources</h2><ul>${report.sources.map((s) => `<li
 
               {/* Agent pipeline */}
               <GlassCard className="p-8">
-                <h3 className="text-xl font-bold mb-8">Agent Pipeline</h3>
-                <div className="flex items-center justify-between relative">
-                  <div className="absolute top-[34px] left-0 w-full h-0.5 bg-white/10 -z-0" />
+                <div className="flex items-center justify-between mb-8">
+                  <h3 className="text-xl font-bold">Agent Pipeline</h3>
+                  <span className="text-xs text-white/40 font-mono">
+                    {agents.filter((a) => a.status === AgentStatus.COMPLETED).length}/{agents.length} agents complete
+                  </span>
+                </div>
 
-                  {agents.map((agent, idx) => (
-                    <div
-                      key={agent.id}
-                      className="flex flex-col items-center gap-3 relative z-10 bg-transparent"
-                    >
-                      <AgentIcon
-                        name={agent.name}
-                        status={agent.status}
-                        isActive={
-                          agent.status === AgentStatus.IN_PROGRESS
-                        }
-                      />
-                      <div className="text-center">
-                        <p className="font-bold text-sm">{agent.name}</p>
-                        <p className="text-[10px] text-white/40 uppercase tracking-wider">
-                          {agent.description}
-                        </p>
-                        <div className="mt-2 flex items-center justify-center gap-1.5">
-                          {agent.status === AgentStatus.IN_PROGRESS && (
-                            <Loader2
-                              size={12}
-                              className="animate-spin text-amber-400"
-                            />
-                          )}
-                          {agent.status === AgentStatus.COMPLETED && (
-                            <CheckCircle2
-                              size={12}
-                              className="text-emerald-400"
-                            />
-                          )}
-                          {agent.status === AgentStatus.FAILED && (
-                            <AlertCircle
-                              size={12}
-                              className="text-rose-400"
-                            />
-                          )}
-                          <span
-                            className={`text-[10px] font-bold ${
-                              agent.status === AgentStatus.COMPLETED
-                                ? 'text-emerald-400'
-                                : agent.status === AgentStatus.IN_PROGRESS
-                                  ? 'text-amber-400'
-                                  : agent.status === AgentStatus.FAILED
-                                    ? 'text-rose-400'
-                                    : 'text-white/20'
-                            }`}
+                <div className="flex items-start justify-between relative px-2">
+                  {/* Background track line */}
+                  <div className="absolute top-[34px] left-[40px] right-[40px] h-[3px] bg-white/5 rounded-full" />
+                  {/* Completed fill line */}
+                  <motion.div
+                    className="absolute top-[34px] left-[40px] h-[3px] rounded-full bg-gradient-to-r from-emerald-500 via-emerald-400 to-emerald-300"
+                    style={{ originX: 0 }}
+                    initial={{ width: 0 }}
+                    animate={{
+                      width: (() => {
+                        const completed = agents.filter((a) => a.status === AgentStatus.COMPLETED).length;
+                        const inProgress = agents.findIndex((a) => a.status === AgentStatus.IN_PROGRESS);
+                        const step = inProgress >= 0 ? inProgress : completed;
+                        const maxW = 100 - (80 / agents.length); // account for icon width
+                        return `${(step / (agents.length - 1)) * maxW}%`;
+                      })(),
+                    }}
+                    transition={{ duration: 0.8, ease: 'easeOut' }}
+                  />
+
+                  {agents.map((agent, idx) => {
+                    const isCompleted = agent.status === AgentStatus.COMPLETED;
+                    const isRunning = agent.status === AgentStatus.IN_PROGRESS;
+                    const isFailed = agent.status === AgentStatus.FAILED;
+
+                    return (
+                      <motion.div
+                        key={agent.id}
+                        initial={{ opacity: 0, y: 24 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: idx * 0.1, duration: 0.5, ease: 'backOut' }}
+                        className="flex flex-col items-center gap-3 relative z-10 w-1/5"
+                      >
+                        <AgentIcon
+                          name={agent.name}
+                          status={agent.status}
+                          isActive={isRunning}
+                        />
+
+                        <div className="text-center mt-1">
+                          <p className="font-bold text-sm leading-tight">{agent.name}</p>
+                          <p className="text-[10px] text-white/40 uppercase tracking-wider mt-0.5">
+                            {agent.description}
+                          </p>
+
+                          <motion.div
+                            className="mt-2 flex items-center justify-center gap-1.5"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            transition={{ delay: 0.2 }}
                           >
-                            {agent.status}
-                          </span>
+                            {isRunning && (
+                              <motion.div
+                                animate={{ rotate: 360 }}
+                                transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}
+                              >
+                                <Loader2 size={12} className="text-amber-400" />
+                              </motion.div>
+                            )}
+                            {isCompleted && (
+                              <motion.div
+                                initial={{ scale: 0 }}
+                                animate={{ scale: 1 }}
+                                transition={{ type: 'spring', stiffness: 400, damping: 12 }}
+                              >
+                                <CheckCircle2 size={12} className="text-emerald-400" />
+                              </motion.div>
+                            )}
+                            {isFailed && (
+                              <motion.div
+                                initial={{ scale: 0 }}
+                                animate={{ scale: [0, 1.3, 1] }}
+                                transition={{ duration: 0.4 }}
+                              >
+                                <AlertCircle size={12} className="text-rose-400" />
+                              </motion.div>
+                            )}
+                            <span
+                              className={`text-[10px] font-bold ${
+                                isCompleted
+                                  ? 'text-emerald-400'
+                                  : isRunning
+                                    ? 'text-amber-400'
+                                    : isFailed
+                                      ? 'text-rose-400'
+                                      : 'text-white/20'
+                              }`}
+                            >
+                              {agent.status}
+                            </span>
+                          </motion.div>
                         </div>
-                      </div>
-                      {idx < agents.length - 1 && (
-                        <div className="absolute top-[34px] left-[calc(100%+8px)] w-[calc(100%-16px)] h-0.5 pointer-events-none">
-                          <div className="w-full h-full bg-white/10 rounded-full overflow-hidden">
+
+                        {/* Animated data-flow dots between agents */}
+                        {idx < agents.length - 1 && isCompleted && (
+                          <div className="absolute top-[34px] left-[calc(50%+28px)] w-[calc(100%-56px)] h-[3px] pointer-events-none overflow-hidden">
+                            {[0, 1, 2].map((dot) => (
+                              <motion.div
+                                key={dot}
+                                className="absolute top-[-2px] w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]"
+                                initial={{ left: '-8px', opacity: 0 }}
+                                animate={{ left: ['0%', '100%'], opacity: [0, 1, 1, 0] }}
+                                transition={{
+                                  repeat: Infinity,
+                                  duration: 1.2,
+                                  delay: dot * 0.4,
+                                  ease: 'linear',
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )}
+                        {idx < agents.length - 1 && isRunning && (
+                          <div className="absolute top-[34px] left-[calc(50%+28px)] w-[calc(100%-56px)] h-[3px] pointer-events-none overflow-hidden">
                             <motion.div
-                              initial={{ x: '-100%' }}
-                              animate={
-                                agent.status === AgentStatus.COMPLETED
-                                  ? { x: '0%' }
-                                  : agent.status ===
-                                      AgentStatus.IN_PROGRESS
-                                    ? {
-                                        x: ['-100%', '0%'],
-                                      }
-                                    : { x: '-100%' }
-                              }
-                              transition={
-                                agent.status === AgentStatus.IN_PROGRESS
-                                  ? {
-                                      repeat: Infinity,
-                                      duration: 1.5,
-                                      ease: 'linear',
-                                    }
-                                  : { duration: 0.5 }
-                              }
-                              className="h-full bg-emerald-400"
+                              className="absolute top-[-1px] w-6 h-[5px] rounded-full bg-gradient-to-r from-transparent via-amber-400 to-transparent"
+                              animate={{ left: ['-24px', '100%'] }}
+                              transition={{ repeat: Infinity, duration: 1.5, ease: 'linear' }}
                             />
                           </div>
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                        )}
+                      </motion.div>
+                    );
+                  })}
                 </div>
 
                 {/* Progress bar */}
-                <div className="mt-12 space-y-2">
+                <div className="mt-12 space-y-3">
                   <div className="flex justify-between text-sm font-bold">
                     <span className="text-white/60">
-                      {progress}% Overall Progress
+                      <motion.span
+                        key={progress}
+                        initial={{ opacity: 0, y: -6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="inline-block"
+                      >
+                        {progress}%
+                      </motion.span>{' '}
+                      Overall Progress
                     </span>
                     <span className="text-amber-400">
                       {agents.find(
@@ -790,13 +877,20 @@ ${report.sources?.length ? `<h2>Sources</h2><ul>${report.sources.map((s) => `<li
                       is active
                     </span>
                   </div>
-                  <div className="h-3 bg-black/30 rounded-full overflow-hidden border border-white/5">
+                  <div className="h-3 bg-black/30 rounded-full overflow-hidden border border-white/5 relative">
                     <motion.div
-                      className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-amber-500"
+                      className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-amber-500 relative"
                       initial={{ width: 0 }}
                       animate={{ width: `${progress}%` }}
-                      transition={{ duration: 0.5 }}
-                    />
+                      transition={{ duration: 0.8, ease: 'easeOut' }}
+                    >
+                      {/* Shimmer overlay */}
+                      <motion.div
+                        className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent"
+                        animate={{ x: ['-100%', '200%'] }}
+                        transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}
+                      />
+                    </motion.div>
                   </div>
                 </div>
               </GlassCard>
