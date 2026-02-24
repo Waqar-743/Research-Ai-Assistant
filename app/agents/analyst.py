@@ -1,6 +1,9 @@
 """
 Analyst Agent
 Responsible for synthesizing and analyzing collected information.
+
+Phase 1: reads sources / raw findings from MongoDB by session_id
+instead of receiving them in the context dict.
 """
 
 from typing import Dict, Any, List
@@ -11,6 +14,7 @@ import re
 from app.agents.base_agent import BaseAgent, AgentStatus
 from app.config import settings
 from app.utils.logging import logger
+from app.database.repositories import SourceRepository, FindingRepository
 
 
 class AnalystAgent(BaseAgent):
@@ -62,21 +66,38 @@ Your analysis MUST be substantive and data-driven. Abstract statements without e
         """
         Execute analysis on collected sources and findings.
         
-        Args:
-            context: Contains 'query', 'sources', 'raw_findings'
-            
-        Returns:
-            Dictionary with consolidated findings, patterns, and insights
+        Phase 1: Loads sources and raw findings from MongoDB by session_id
+        instead of receiving them in the context dict.
         """
         query = context.get("query", "")
-        sources = context.get("sources", [])
-        raw_findings = context.get("raw_findings", [])
+        session_id = context.get("session_id", "")
         
-        logger.info(f"Analyst starting analysis for: {query}")
+        logger.info(f"Analyst starting analysis for: {query} (session={session_id})")
         
         try:
             await self._set_status(AgentStatus.IN_PROGRESS)
-            await self._update_progress(5, "Beginning analysis of collected data...")
+            await self._update_progress(5, "Loading data from database...")
+
+            # ── Phase 1: query MongoDB ────────────────────────────────
+            sources: List[Dict[str, Any]] = []
+            raw_findings: List[Dict[str, Any]] = []
+
+            if session_id:
+                source_docs = await SourceRepository.get_by_research(session_id)
+                sources = [self._source_doc_to_dict(s) for s in source_docs]
+
+                finding_docs = await FindingRepository.get_by_research(session_id)
+                raw_findings = [self._finding_doc_to_dict(f) for f in finding_docs]
+            else:
+                # Fallback for backward compat / tests
+                sources = context.get("sources", [])
+                raw_findings = context.get("raw_findings", [])
+
+            logger.info(
+                f"Analyst loaded {len(sources)} sources and "
+                f"{len(raw_findings)} findings from DB"
+            )
+            # ──────────────────────────────────────────────────────────
             
             # Step 1: Consolidate findings
             await self._update_progress(15, "Consolidating findings from sources...")
@@ -456,3 +477,34 @@ List the insights in order of importance, one per line."""
             organized.append(organized_finding)
         
         return organized
+
+    # ── Phase 1 helpers: MongoDB doc → plain dict ─────────────────
+    @staticmethod
+    def _source_doc_to_dict(doc) -> Dict[str, Any]:
+        """Convert a Source Beanie document to the dict format agents expect."""
+        return {
+            "title": doc.title,
+            "url": doc.url,
+            "snippet": doc.content_preview or "",
+            "source_type": doc.source_type.value if hasattr(doc.source_type, "value") else str(doc.source_type or "other"),
+            "api_source": doc.api_source or "unknown",
+            "author": doc.author or "",
+            "published_at": str(doc.published_at) if doc.published_at else "",
+            "credibility_score": doc.credibility_score,
+            **(doc.metadata or {}),
+        }
+
+    @staticmethod
+    def _finding_doc_to_dict(doc) -> Dict[str, Any]:
+        """Convert a Finding Beanie document to the dict format agents expect."""
+        meta = doc.metadata or {}
+        return {
+            "content": doc.content,
+            "title": doc.title,
+            "type": doc.finding_type.value if hasattr(doc.finding_type, "value") else str(doc.finding_type or "insight"),
+            "source_refs": meta.get("source_refs", ""),
+            "resolved_sources": meta.get("resolved_sources", []),
+            "preliminary_credibility": meta.get("preliminary_credibility", "medium"),
+            "confidence_score": doc.confidence_score,
+            "verified": doc.verified,
+        }

@@ -266,7 +266,43 @@ class ResearchRepository:
         await ResearchSession.find_one(
             ResearchSession.research_id == research_id
         ).update({"$set": {"report_id": report_id}})
-    
+
+    # ------------------------------------------------------------------
+    # Pipeline data helpers — agents save / load intermediate results
+    # ------------------------------------------------------------------
+    @staticmethod
+    async def save_pipeline_data(
+        research_id: str,
+        key: str,
+        value: Any
+    ):
+        """Store an intermediate result under ``pipeline_data.<key>``."""
+        session = await ResearchSession.find_one(
+            ResearchSession.research_id == research_id
+        )
+        if session:
+            pipeline = session.pipeline_data or {}
+            pipeline[key] = value
+            await session.update({"$set": {"pipeline_data": pipeline}})
+
+    @staticmethod
+    async def get_pipeline_data(
+        research_id: str,
+        key: Optional[str] = None
+    ) -> Any:
+        """
+        Load pipeline data.  If *key* is given only that slice is
+        returned; otherwise the whole ``pipeline_data`` dict is returned.
+        """
+        session = await ResearchSession.find_one(
+            ResearchSession.research_id == research_id
+        )
+        if session:
+            if key:
+                return (session.pipeline_data or {}).get(key)
+            return session.pipeline_data or {}
+        return {} if key is None else None
+
     @staticmethod
     async def delete(research_id: str) -> bool:
         """Delete a research session and related documents."""

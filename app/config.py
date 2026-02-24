@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     redis_url: Optional[str] = Field(default=None, alias="REDIS_URL")
     cache_ttl: int = Field(default=86400, alias="CACHE_TTL")  # 24 hours
     
+    # Sentry Error Tracking
+    sentry_dsn: Optional[str] = Field(default=None, alias="SENTRY_DSN")
+    
     # LLM Configuration (OpenRouter)
     openrouter_api_key: str = Field(default="", alias="OPENROUTER_API_KEY")
     openrouter_base_url: str = Field(

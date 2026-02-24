@@ -1,12 +1,17 @@
 """
 Base Agent Class
 Provides common functionality for all specialized agents.
+
+Phase 3: Sentry integration — agent execution and LLM calls are
+wrapped with Sentry spans for tracing and error capture.
 """
 
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, Callable
 from datetime import datetime
 from enum import Enum
+
+import sentry_sdk
 
 from app.config import settings
 from app.utils.logging import logger
@@ -125,29 +130,30 @@ class BaseAgent(ABC):
         """
         Use LLM for reasoning/thinking.
         
-        Args:
-            prompt: The prompt for the LLM
-            context: Optional additional context
-            
-        Returns:
-            LLM response
+        Phase 3: wrapped with Sentry span for tracing.
         """
         full_prompt = prompt
         if context:
             full_prompt = f"Context:\n{context}\n\n{prompt}"
         
-        try:
-            response = await self.llm.generate(
-                prompt=full_prompt,
-                model=self.model,
-                system_prompt=self.system_prompt,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens
-            )
-            return response
-        except Exception as e:
-            logger.error(f"Agent {self.name} thinking failed: {e}")
-            raise
+        with sentry_sdk.start_span(op="llm.generate", description=f"{self.name} think") as span:
+            span.set_data("agent", self.name)
+            span.set_data("model", self.model)
+            span.set_data("prompt_length", len(full_prompt))
+            try:
+                response = await self.llm.generate(
+                    prompt=full_prompt,
+                    model=self.model,
+                    system_prompt=self.system_prompt,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens
+                )
+                span.set_data("response_length", len(response))
+                return response
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
+                logger.error(f"Agent {self.name} thinking failed: {e}")
+                raise
     
     def get_state(self) -> Dict[str, Any]:
         """Get current agent state."""

@@ -1,6 +1,9 @@
 """
 Fact-Checker Agent
 Responsible for validating and verifying information accuracy.
+
+Phase 1: reads sources and organized findings from MongoDB by session_id
+instead of receiving them in the context dict.
 """
 
 from typing import Dict, Any, List
@@ -10,6 +13,7 @@ from app.agents.base_agent import BaseAgent, AgentStatus
 from app.tools.validation_tools import ValidationTools
 from app.config import settings
 from app.utils.logging import logger
+from app.database.repositories import SourceRepository, ResearchRepository
 
 
 class FactCheckerAgent(BaseAgent):
@@ -61,22 +65,37 @@ Your verification must be thorough and honest."""
         """
         Execute fact-checking on analyzed findings.
         
-        Args:
-            context: Contains 'query', 'sources', 'organized_findings', 'key_insights'
-            
-        Returns:
-            Dictionary with validated findings and credibility assessments
+        Phase 1: Loads sources from MongoDB and organized findings from
+        pipeline_data by session_id.
         """
         query = context.get("query", "")
-        sources = context.get("sources", [])
-        findings = context.get("organized_findings", [])
-        insights = context.get("key_insights", [])
-        
-        # If no organized findings, try to use raw findings or consolidated findings
+        session_id = context.get("session_id", "")
+
+        # ── Phase 1: query MongoDB ────────────────────────────────
+        sources: List[Dict[str, Any]] = []
+        findings: List[Dict[str, Any]] = []
+        insights: List[str] = []
+
+        if session_id:
+            # Sources from Source collection
+            source_docs = await SourceRepository.get_by_research(session_id)
+            sources = [self._source_doc_to_dict(s) for s in source_docs]
+
+            # Organized findings from pipeline_data
+            findings = await ResearchRepository.get_pipeline_data(session_id, "organized_findings") or []
+            insights = await ResearchRepository.get_pipeline_data(session_id, "key_insights") or []
+        else:
+            # Backward compat / tests
+            sources = context.get("sources", [])
+            findings = context.get("organized_findings", [])
+            insights = context.get("key_insights", [])
+
+        # Fallback chain
         if not findings:
             findings = context.get("consolidated_findings", [])
         if not findings:
             findings = context.get("raw_findings", [])
+        # ──────────────────────────────────────────────────────────
         
         logger.info(f"Fact-Checker starting verification for: {query} ({len(findings)} findings, {len(sources)} sources)")
         
@@ -294,6 +313,22 @@ Your verification must be thorough and honest."""
             return "Some bias detected. Consider seeking additional perspectives."
         else:
             return "Significant bias detected. Findings should be interpreted with caution."
+
+    # ── Phase 1 helper ────────────────────────────────────────────
+    @staticmethod
+    def _source_doc_to_dict(doc) -> Dict[str, Any]:
+        """Convert a Source Beanie document to the dict format agents expect."""
+        return {
+            "title": doc.title,
+            "url": doc.url,
+            "snippet": doc.content_preview or "",
+            "source_type": doc.source_type.value if hasattr(doc.source_type, "value") else str(doc.source_type or "other"),
+            "api_source": doc.api_source or "unknown",
+            "author": doc.author or "",
+            "published_at": str(doc.published_at) if doc.published_at else "",
+            "credibility_score": doc.credibility_score,
+            **(doc.metadata or {}),
+        }
     
     def _calculate_confidence(
         self,

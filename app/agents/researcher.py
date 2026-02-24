@@ -74,10 +74,13 @@ Output structured findings with clear source attribution and concrete data point
         source_preferences = context.get("source_preferences", [])
         max_sources = context.get("max_sources", 300)
         research_mode = context.get("research_mode", "auto")
+        search_hints = context.get("search_hints", "")
         # Store as instance flag so inner methods can reference it
         self._is_deep = research_mode == "deep"
 
         logger.info(f"Researcher starting search for: {query} (mode={research_mode}, deep={self._is_deep})")
+        if search_hints:
+            logger.info(f"Researcher search_hints from UserProxy: {search_hints[:120]}")
         
         try:
             await self._set_status(AgentStatus.IN_PROGRESS)
@@ -85,6 +88,10 @@ Output structured findings with clear source attribution and concrete data point
             
             # Generate search queries based on focus areas
             search_queries = await self._generate_search_queries(query, focus_areas)
+
+            # If UserProxy provided search hints, add as extra query
+            if search_hints and search_hints != query:
+                search_queries.append(search_hints)
             
             await self._update_progress(10, f"Generated {len(search_queries)} search queries")
             
@@ -108,11 +115,19 @@ Output structured findings with clear source attribution and concrete data point
                     progress,
                     f"Searching: {search_query[:50]}..."
                 )
-                
+
+                # Micro-update callback: fires as each API finishes
+                async def _on_api_done(api_name, count, done, total):
+                    await self._update_progress(
+                        progress + int((done / total) * (40 // len(search_queries))),
+                        f"Fetched {count} results from {api_name} ({done}/{total} APIs done)"
+                    )
+
                 # Execute parallel search across all APIs
                 results = await self.search_tools.search_all(
                     query=search_query,
-                    max_results_per_source=results_per_source
+                    max_results_per_source=results_per_source,
+                    on_api_complete=_on_api_done
                 )
                 
                 # Aggregate results
@@ -258,7 +273,7 @@ Return only the queries, one per line, no numbering or explanation."""
         scored_sources.sort(key=lambda s: s.get("_relevance_score", 0), reverse=True)
         
         # Take top candidates (generous to allow LLM to refine)
-        candidates = scored_sources[:min(80, len(scored_sources))]
+        candidates = scored_sources[:min(150, len(scored_sources))]
         
         # Step 2: LLM-based relevance filtering on top candidates
         # Process in batches of 20
@@ -274,37 +289,56 @@ Return only the queries, one per line, no numbering or explanation."""
                 snippet = (source.get("snippet", "") or "")[:200]
                 source_list.append(f"[{i}] {title} — {snippet}")
             
-            prompt = f"""You are a research relevance filter. Evaluate which sources are DIRECTLY relevant to this research query.
+            prompt = f"""You are a research relevance filter. Evaluate which sources are relevant to this research query.
 
 RESEARCH QUERY: {query}
 
 SOURCES:
 {chr(10).join(source_list)}
 
-For each source, respond with ONLY the index numbers of sources that are DIRECTLY relevant to the research query.
-A source is relevant if it contains information, data, analysis, or insights that directly help answer or inform the research query.
-A source is NOT relevant if it's about a completely different topic, even if it shares some keywords.
+For each source, respond with ONLY the index numbers of sources that are relevant.
+A source is relevant if it touches on the research topic, provides useful background or context, contains data or expert perspectives, or could inform any aspect of the query.
+Be INCLUSIVE — when in doubt, KEEP the source. Only reject sources about a genuinely unrelated topic with no meaningful connection to the query.
 
 Respond with ONLY a comma-separated list of relevant source indices (e.g., "0, 2, 5, 7").
 If none are relevant, respond with "NONE"."""
             
             try:
+                await self._update_progress(
+                    62 + int((batch_start / len(candidates)) * 15),
+                    f"Evaluating sources {batch_start + 1}–{batch_start + len(batch)} of {len(candidates)} for relevance…"
+                )
                 response = await self.think(prompt)
                 response = response.strip()
                 
                 if response.upper() != "NONE":
                     # Parse indices
                     import re
+                    selected_indices = set()
                     indices = re.findall(r'\d+', response)
                     for idx_str in indices:
                         idx = int(idx_str)
                         if 0 <= idx < len(batch):
                             relevant_sources.append(batch[idx])
+                            selected_indices.add(idx)
+
+                    # Log rejected sources for auditing
+                    for idx, source in enumerate(batch):
+                        if idx not in selected_indices:
+                            title = (source.get("title", "") or "")[:60]
+                            score = source.get("_relevance_score", 0)
+                            logger.info(f"[FILTER_REJECTED] '{title}' (kw_score={score:.2f}) — LLM did not select")
+                else:
+                    # LLM said NONE — log all as rejected
+                    for idx, source in enumerate(batch):
+                        title = (source.get("title", "") or "")[:60]
+                        score = source.get("_relevance_score", 0)
+                        logger.info(f"[FILTER_REJECTED] '{title}' (kw_score={score:.2f}) — LLM returned NONE")
             except Exception as e:
                 logger.warning(f"LLM relevance filtering failed for batch: {e}")
                 # Fallback: include sources with decent keyword score
                 for source in batch:
-                    if source.get("_relevance_score", 0) >= 0.3:
+                    if source.get("_relevance_score", 0) >= 0.1:
                         relevant_sources.append(source)
         
         # Clean up temporary score field
@@ -312,13 +346,13 @@ If none are relevant, respond with "NONE"."""
             source.pop("_relevance_score", None)
         
         # Ensure we have at least some sources (fallback to keyword-filtered)
-        if len(relevant_sources) < 5:
+        if len(relevant_sources) < 10:
             logger.warning(f"LLM filtering returned only {len(relevant_sources)} sources, using keyword fallback")
-            for source in scored_sources[:30]:
+            for source in scored_sources[:50]:
                 source.pop("_relevance_score", None)
                 if source not in relevant_sources:
                     relevant_sources.append(source)
-                if len(relevant_sources) >= 30:
+                if len(relevant_sources) >= 50:
                     break
         
         logger.info(f"Relevance filtering: {len(sources)} → {len(relevant_sources)} relevant sources")
@@ -341,6 +375,10 @@ If none are relevant, respond with "NONE"."""
 
         for batch_start in range(0, min(len(sources), max_to_process), batch_size):
             batch = sources[batch_start:batch_start + batch_size]
+            await self._update_progress(
+                85 + int((batch_start / min(len(sources), max_to_process)) * 12),
+                f"Extracting findings from sources {batch_start + 1}–{batch_start + len(batch)} of {min(len(sources), max_to_process)}…"
+            )
             batch_findings = await self._extract_from_batch(query, batch, batch_start)
             all_findings.extend(batch_findings)
         

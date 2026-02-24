@@ -1,6 +1,10 @@
 """
 Research Service
 Main service coordinating the research workflow.
+
+Phase 2: Progress events are also published via Redis Pub/Sub
+so that multiple server processes can broadcast to their own
+WebSocket clients.
 """
 
 from typing import Dict, Any, Optional, List
@@ -9,11 +13,10 @@ import asyncio
 
 from app.agents.orchestrator import AgentOrchestrator
 from app.database.schemas import (
-    ResearchSession, ResearchStatus, Source, Finding, Report,
-    SourceType, FindingType
+    ResearchSession, ResearchStatus, Report
 )
 from app.database.repositories import (
-    ResearchRepository, SourceRepository, FindingRepository, ReportRepository
+    ResearchRepository, ReportRepository
 )
 from app.api.websocket import (
     send_agent_update, send_phase_update,
@@ -21,6 +24,7 @@ from app.api.websocket import (
     manager as ws_manager
 )
 from app.utils.logging import logger, log_research_progress
+from app.services.redis_cache import get_redis
 
 
 # Global service instance
@@ -115,6 +119,18 @@ class ResearchService:
                 elif _state.get("status") == "in_progress":
                     overall += int(_weight * (_state.get("progress", 0) / 100))
             overall_progress = min(overall, 100)
+
+            # ── Phase 2: Publish to Redis Pub/Sub ─────────────────
+            redis = get_redis()
+            await redis.publish_progress(session_id, {
+                "agent": agent_name,
+                "status": status,
+                "progress": progress,
+                "overall_progress": overall_progress,
+                "output": output,
+                "error": error,
+            })
+            # ──────────────────────────────────────────────────────
 
             # Send WebSocket update — include overall_progress in data so the
             # frontend never needs to guess which progress value is "pipeline-wide"
@@ -275,49 +291,16 @@ class ResearchService:
         session_id: str,
         results: Dict[str, Any]
     ):
-        """Save research results to database."""
+        """
+        Save research results to database.
+
+        Phase 1: sources and findings are already persisted by the
+        orchestrator during the pipeline.  This method now only
+        persists the **report** (to avoid double-inserting sources
+        and findings).
+        """
         try:
-            # Save sources
-            sources = results.get("sources", [])
-            for source_data in sources[:200]:  # Limit to 200 sources
-                source = Source(
-                    research_id=session_id,
-                    title=source_data.get("title", ""),
-                    url=source_data.get("url", ""),
-                    content_preview=source_data.get("snippet", "") or source_data.get("description", ""),
-                    full_content=source_data.get("content", "") or None,
-                    api_source=source_data.get("api_source", "unknown"),
-                    source_type=self._map_source_type(source_data.get("source_type")),
-                    credibility_score=source_data.get("credibility_score", 0.5),
-                    author=source_data.get("author"),
-                    published_at=source_data.get("published_at"),
-                    metadata=source_data
-                )
-                await source.insert()
-            
-            logger.info(f"Saved {min(len(sources), 200)} sources for session {session_id}")
-            
-            # Save findings
-            findings = results.get("findings", [])
-            for finding_data in findings:
-                content = finding_data.get("content") or finding_data.get("statement") or ""
-                title = finding_data.get("title") or (content[:80] + "..." if len(content) > 80 else content)
-                finding = Finding(
-                    research_id=session_id,
-                    title=title,
-                    content=content,
-                    finding_type=self._map_finding_type(finding_data.get("finding_type")),
-                    confidence_score=finding_data.get("confidence_score", 0.5),
-                    verified=finding_data.get("verified", False),
-                    supporting_sources=finding_data.get("supporting_sources", []) or finding_data.get("source_refs", []),
-                    contradicting_sources=finding_data.get("contradicting_sources", []),
-                    agent_generated_by=finding_data.get("agent_generated_by", "fact_checker")
-                )
-                await finding.insert()
-            
-            logger.info(f"Saved {len(findings)} findings for session {session_id}")
-            
-            # Save report
+            # Save report (the one thing not yet persisted by orchestrator)
             report_data = results.get("report", {})
             if report_data:
                 report = Report(
@@ -332,42 +315,10 @@ class ResearchService:
                     generated_at=datetime.utcnow()
                 )
                 await report.insert()
-                
                 logger.info(f"Saved report for session {session_id}")
                 
         except Exception as e:
             logger.error(f"Failed to save research results: {e}")
-    
-    def _map_source_type(self, source_type: Optional[str]) -> Optional[SourceType]:
-        """Map source type string to enum."""
-        if not source_type:
-            return None
-        
-        mapping = {
-            "academic": SourceType.ACADEMIC,
-            "news": SourceType.NEWS,
-            "official": SourceType.OFFICIAL,
-            "wikipedia": SourceType.WIKIPEDIA,
-            "wiki": SourceType.WIKIPEDIA,
-            "blog": SourceType.BLOG,
-            "social": SourceType.OTHER,
-            "other": SourceType.OTHER
-        }
-        return mapping.get(source_type.lower(), SourceType.OTHER)
-    
-    def _map_finding_type(self, finding_type: Optional[str]) -> Optional[FindingType]:
-        """Map finding type string to enum."""
-        if not finding_type:
-            return FindingType.INSIGHT
-        
-        mapping = {
-            "fact": FindingType.FACT,
-            "statistic": FindingType.STATISTIC,
-            "definition": FindingType.DEFINITION,
-            "insight": FindingType.INSIGHT,
-            "claim": FindingType.CLAIM
-        }
-        return mapping.get(finding_type.lower(), FindingType.INSIGHT)
     
     async def cancel_research(self, session_id: str):
         """Cancel an in-progress research session."""

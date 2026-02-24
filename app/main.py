@@ -3,12 +3,29 @@ FastAPI Application Entry Point
 Multi-Agent Research Assistant Backend
 """
 
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
+
+from app.config import settings
+
+# -----------------------------------------------------------------
+# Phase 3: Sentry — initialised at the very top of the process
+# -----------------------------------------------------------------
+if settings.sentry_dsn:
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        integrations=[FastApiIntegration(), StarletteIntegration()],
+        traces_sample_rate=0.3,
+        environment="development" if settings.debug else "production",
+        send_default_pii=False,
+    )
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.config import settings
 from app.api.v1 import research, history, status, health
 from app.api.v1 import documents, settings as settings_api
 from app.api.websocket import router as websocket_router
@@ -16,6 +33,7 @@ from app.database.connection import connect_to_mongo, close_mongo_connection
 from app.middleware.error_handler import error_handler_middleware
 from app.middleware.logging import logging_middleware
 from app.utils.logging import setup_logging, logger
+from app.services.redis_cache import get_redis
 
 
 @asynccontextmanager
@@ -31,10 +49,17 @@ async def lifespan(app: FastAPI):
     await connect_to_mongo()
     logger.info("Connected to MongoDB")
     
+    # Phase 2: Redis
+    redis = get_redis()
+    await redis.connect()
+    logger.info("Connected to Redis")
+    
     yield
     
     # Shutdown
     logger.info("Shutting down...")
+    await redis.disconnect()
+    logger.info("Disconnected from Redis")
     await close_mongo_connection()
     logger.info("Disconnected from MongoDB")
 

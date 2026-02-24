@@ -1,6 +1,9 @@
 """
 Report Generator Agent
 Responsible for creating professional formatted reports.
+
+Phase 1: reads validated findings, sources, insights, and confidence data
+from MongoDB by session_id instead of receiving them in the context dict.
 """
 
 from typing import Dict, Any, List, Optional
@@ -12,6 +15,7 @@ from app.agents.base_agent import BaseAgent, AgentStatus
 from app.tools.formatting_tools import FormattingTools
 from app.config import settings
 from app.utils.logging import logger
+from app.database.repositories import SourceRepository, ResearchRepository
 
 
 class ReportGeneratorAgent(BaseAgent):
@@ -67,30 +71,56 @@ Your reports should be publication-ready with zero placeholder text."""
         """
         Execute report generation from validated findings.
         
-        Args:
-            context: Contains 'query', 'validated_findings', 'sources', 
-                    'confidence_summary', 'report_format', 'citation_style'
-            
-        Returns:
-            Dictionary with generated report in multiple formats
+        Phase 1: Loads sources, validated findings, insights, and confidence
+        data from MongoDB by session_id.
         """
         query = context.get("query", "")
-        findings = context.get("validated_findings", [])
-        sources = context.get("sources", [])
-        key_insights = context.get("key_insights", [])
-        confidence_summary = context.get("confidence_summary", {})
+        session_id = context.get("session_id", "")
         report_format = context.get("report_format", "markdown")
         citation_style = context.get("citation_style", "APA")
-        
-        # CRITICAL: Ensure findings are never empty — fallback chain
+
+        # ── Phase 1: query MongoDB ────────────────────────────────
+        sources: List[Dict[str, Any]] = []
+        findings: List[Dict[str, Any]] = []
+        key_insights: List[str] = []
+        confidence_summary: Dict[str, Any] = {}
+
+        if session_id:
+            source_docs = await SourceRepository.get_by_research(session_id)
+            sources = [self._source_doc_to_dict(s) for s in source_docs]
+
+            pipeline = await ResearchRepository.get_pipeline_data(session_id)
+            findings = pipeline.get("validated_findings", [])
+            key_insights = pipeline.get("key_insights", [])
+            confidence_summary = pipeline.get("confidence_summary", {})
+
+            # Fallback chain
+            if not findings:
+                findings = pipeline.get("organized_findings", [])
+        else:
+            # Backward compat / tests
+            sources = context.get("sources", [])
+            findings = context.get("validated_findings", [])
+            key_insights = context.get("key_insights", [])
+            confidence_summary = context.get("confidence_summary", {})
+
+        # Extra fallback for contexts missing validated_findings
         if not findings:
             findings = context.get("organized_findings", [])
         if not findings:
             findings = context.get("consolidated_findings", [])
         if not findings:
             findings = context.get("raw_findings", [])
+        # ──────────────────────────────────────────────────────────
         
         logger.info(f"Report Generator starting for: {query} ({len(findings)} findings, {len(sources)} sources)")
+        
+        if not query:
+            logger.error("Report Generator received EMPTY query — this is a pipeline bug")
+        if len(findings) == 0:
+            logger.warning("Report Generator received 0 findings — report quality will be limited")
+        if len(sources) == 0:
+            logger.warning("Report Generator received 0 sources — report quality will be limited")
         
         try:
             await self._set_status(AgentStatus.IN_PROGRESS)
@@ -183,24 +213,31 @@ Your reports should be publication-ready with zero placeholder text."""
     async def _generate_title(self, query: str) -> str:
         """Generate a professional report title."""
         
-        prompt = f"""Generate a professional, concise report title for this research query.
+        prompt = f"""Generate a professional, concise report title for this specific research query.
 
 Query: {query}
 
 The title should:
-1. Be clear and descriptive
+1. Be clear and descriptive of THIS SPECIFIC topic
 2. Be professional in tone
 3. Be 5-12 words maximum
 4. Not include quotes or special characters
+5. MUST directly reflect the query above — do NOT invent a different topic
 
 Return only the title, nothing else."""
         
         try:
             title = await self.think(prompt)
-            return title.strip().strip('"\'')
+            title = title.strip().strip('"\'')
+            # Safety check: if the LLM returned a suspiciously generic title,
+            # fall back to the user's query
+            if len(title) < 5 or not any(w.lower() in title.lower() for w in query.split()[:3] if len(w) > 3):
+                logger.warning(f"Title '{title}' seems unrelated to query '{query}', using fallback")
+                return f"Research Report: {query[:80]}"
+            return title
         except Exception as e:
             logger.warning(f"Title generation failed: {e}")
-            return f"Research Report: {query[:50]}"
+            return f"Research Report: {query[:80]}"
     
     async def _structure_sections(
         self,
@@ -535,3 +572,19 @@ Write the section (minimum 250 words):"""
         )
         
         return round(min(quality, 5.0), 1)
+
+    # ── Phase 1 helper ────────────────────────────────────────────
+    @staticmethod
+    def _source_doc_to_dict(doc) -> Dict[str, Any]:
+        """Convert a Source Beanie document to the dict format agents expect."""
+        return {
+            "title": doc.title,
+            "url": doc.url,
+            "snippet": doc.content_preview or "",
+            "source_type": doc.source_type.value if hasattr(doc.source_type, "value") else str(doc.source_type or "other"),
+            "api_source": doc.api_source or "unknown",
+            "author": doc.author or "",
+            "published_at": str(doc.published_at) if doc.published_at else "",
+            "credibility_score": doc.credibility_score,
+            **(doc.metadata or {}),
+        }

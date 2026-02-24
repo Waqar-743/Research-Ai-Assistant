@@ -1,6 +1,9 @@
 """
 Search Tools for the Researcher Agent.
 Integrates with SerpAPI, Google, NewsAPI, ArXiv, PubMed, and Wikipedia.
+
+Phase 2: All search methods check Redis cache before making external
+API calls, and store results on cache miss.
 """
 
 import asyncio
@@ -11,23 +14,31 @@ import feedparser
 from urllib.parse import urlencode, quote_plus
 import xml.etree.ElementTree as ET
 
+import sentry_sdk
+
 from app.config import settings
 from app.utils.logging import logger
+from app.services.redis_cache import get_redis
 
 
 class SearchTools:
     """Collection of search tools for gathering information from multiple sources."""
     
+    # Cache TTL — 24 hours for search results
+    CACHE_TTL = 86400
+
     def __init__(self):
         self.timeout = httpx.Timeout(30.0, connect=10.0)
         self.headers = {
             "User-Agent": "Multi-Agent-Research-Assistant/1.0"
         }
+        self._cache = get_redis()
     
     async def search_all(
         self,
         query: str,
-        max_results_per_source: int = 20
+        max_results_per_source: int = 20,
+        on_api_complete: Optional[Any] = None
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
         Search all available sources in parallel.
@@ -35,29 +46,57 @@ class SearchTools:
         Args:
             query: Search query string
             max_results_per_source: Maximum results from each source
+            on_api_complete: Optional async callback(api_name, count, done_count, total_apis)
             
         Returns:
             Dictionary with results from each source
         """
         logger.info(f"Starting parallel search for: {query}")
         
+        api_names = ["google", "newsapi", "arxiv", "pubmed", "wikipedia"]
+        completed_count = 0
+
+        async def _run(api_name: str, coro):
+            nonlocal completed_count
+            try:
+                result = await coro
+            except Exception:
+                result = []
+            completed_count += 1
+            if on_api_complete:
+                await on_api_complete(api_name, len(result), completed_count, len(api_names))
+            return result
+
         tasks = [
-            self.web_search(query, max_results_per_source),  # Uses SerpAPI or Google
-            self.newsapi_search(query, max_results_per_source),
-            self.arxiv_search(query, max_results_per_source),
-            self.pubmed_search(query, max_results_per_source),
-            self.wikipedia_search(query)
+            _run("google", self.web_search(query, max_results_per_source)),
+            _run("newsapi", self.newsapi_search(query, max_results_per_source)),
+            _run("arxiv", self.arxiv_search(query, max_results_per_source)),
+            _run("pubmed", self.pubmed_search(query, max_results_per_source)),
+            _run("wikipedia", self.wikipedia_search(query)),
         ]
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        return {
-            "google": results[0] if not isinstance(results[0], Exception) else [],
-            "newsapi": results[1] if not isinstance(results[1], Exception) else [],
-            "arxiv": results[2] if not isinstance(results[2], Exception) else [],
-            "pubmed": results[3] if not isinstance(results[3], Exception) else [],
-            "wikipedia": results[4] if not isinstance(results[4], Exception) else []
+
+        raw_results = await asyncio.gather(*tasks)
+        output = dict(zip(api_names, raw_results))
+
+        # ── Raw payload logging + Sentry warnings ────────────────
+        api_configured = {
+            "google": bool(settings.serpapi_key or (settings.google_api_key and settings.google_search_engine_id)),
+            "newsapi": bool(settings.newsapi_key),
+            "arxiv": True,   # no key needed
+            "pubmed": True,  # no key needed
+            "wikipedia": True,
         }
+        for api_name in api_names:
+            count = len(output[api_name])
+            logger.info(f"[RAW_PAYLOAD] {api_name}: {count} results for '{query[:60]}'")
+            if count == 0 and api_configured.get(api_name):
+                sentry_sdk.capture_message(
+                    f"API {api_name} returned 0 results for: {query[:120]}",
+                    level="warning",
+                )
+        # ─────────────────────────────────────────────────────────
+
+        return output
     
     async def web_search(
         self,
@@ -92,17 +131,18 @@ class SearchTools:
     ) -> List[Dict[str, Any]]:
         """
         Search using SerpAPI (Google Search Results API).
-        
-        Args:
-            query: Search query
-            num_results: Number of results to return
-            
-        Returns:
-            List of search results with title, url, snippet
+        Phase 2: checks Redis cache first.
         """
         if not settings.serpapi_key:
             logger.warning("SerpAPI key not configured")
             return []
+
+        # ── Redis cache check ────────────────────────────────────
+        cache_query = f"serpapi:{query}:{num_results}"
+        cached = await self._cache.get_search_cache("serpapi", cache_query)
+        if cached is not None:
+            return cached
+        # ─────────────────────────────────────────────────────────
         
         results = []
         
@@ -161,6 +201,10 @@ class SearchTools:
         except Exception as e:
             logger.error(f"SerpAPI search failed: {e}")
             
+        # ── Cache store ──────────────────────────────────────────
+        if results:
+            await self._cache.set_search_cache("serpapi", cache_query, results[:num_results], self.CACHE_TTL)
+        # ─────────────────────────────────────────────────────────
         return results[:num_results]
     
     async def google_search(
@@ -170,17 +214,18 @@ class SearchTools:
     ) -> List[Dict[str, Any]]:
         """
         Search using Google Custom Search API.
-        
-        Args:
-            query: Search query
-            num_results: Number of results to return (max 100)
-            
-        Returns:
-            List of search results with title, url, snippet
+        Phase 2: checks Redis cache first.
         """
         if not settings.google_api_key or not settings.google_search_engine_id:
             logger.warning("Google API credentials not configured")
             return []
+
+        # ── Redis cache check ────────────────────────────────────
+        cache_query = f"google:{query}:{num_results}"
+        cached = await self._cache.get_search_cache("google", cache_query)
+        if cached is not None:
+            return cached
+        # ─────────────────────────────────────────────────────────
         
         results = []
         
@@ -225,7 +270,11 @@ class SearchTools:
             
         except Exception as e:
             logger.error(f"Google search failed: {e}")
-            
+
+        # ── Cache store ──────────────────────────────────────────
+        if results:
+            await self._cache.set_search_cache("google", cache_query, results[:num_results], self.CACHE_TTL)
+        # ─────────────────────────────────────────────────────────
         return results[:num_results]
     
     async def newsapi_search(
@@ -237,19 +286,18 @@ class SearchTools:
     ) -> List[Dict[str, Any]]:
         """
         Search using NewsAPI for latest news articles.
-        
-        Args:
-            query: Search query
-            num_results: Number of results
-            language: Language code
-            sort_by: Sort order (relevancy, publishedAt, popularity)
-            
-        Returns:
-            List of news articles
+        Phase 2: checks Redis cache first.
         """
         if not settings.newsapi_key:
             logger.warning("NewsAPI key not configured")
             return []
+
+        # ── Redis cache check ────────────────────────────────────
+        cache_query = f"newsapi:{query}:{num_results}:{sort_by}"
+        cached = await self._cache.get_search_cache("newsapi", cache_query)
+        if cached is not None:
+            return cached
+        # ─────────────────────────────────────────────────────────
         
         results = []
         
@@ -296,7 +344,11 @@ class SearchTools:
             
         except Exception as e:
             logger.error(f"NewsAPI search failed: {e}")
-            
+
+        # ── Cache store ──────────────────────────────────────────
+        if results:
+            await self._cache.set_search_cache("newsapi", cache_query, results, self.CACHE_TTL)
+        # ─────────────────────────────────────────────────────────
         return results
     
     async def arxiv_search(
@@ -306,14 +358,15 @@ class SearchTools:
     ) -> List[Dict[str, Any]]:
         """
         Search ArXiv for academic papers.
-        
-        Args:
-            query: Search query
-            max_results: Maximum number of results
-            
-        Returns:
-            List of academic papers with metadata
+        Phase 2: checks Redis cache first.
         """
+        # ── Redis cache check ────────────────────────────────────
+        cache_query = f"arxiv:{query}:{max_results}"
+        cached = await self._cache.get_search_cache("arxiv", cache_query)
+        if cached is not None:
+            return cached
+        # ─────────────────────────────────────────────────────────
+
         results = []
         
         try:
@@ -359,7 +412,11 @@ class SearchTools:
             
         except Exception as e:
             logger.error(f"ArXiv search failed: {e}")
-            
+
+        # ── Cache store ──────────────────────────────────────────
+        if results:
+            await self._cache.set_search_cache("arxiv", cache_query, results, self.CACHE_TTL)
+        # ─────────────────────────────────────────────────────────
         return results
     
     async def pubmed_search(
@@ -369,14 +426,15 @@ class SearchTools:
     ) -> List[Dict[str, Any]]:
         """
         Search PubMed for medical/scientific research.
-        
-        Args:
-            query: Search query
-            max_results: Maximum number of results
-            
-        Returns:
-            List of medical research papers
+        Phase 2: checks Redis cache first.
         """
+        # ── Redis cache check ────────────────────────────────────
+        cache_query = f"pubmed:{query}:{max_results}"
+        cached = await self._cache.get_search_cache("pubmed", cache_query)
+        if cached is not None:
+            return cached
+        # ─────────────────────────────────────────────────────────
+
         results = []
         
         try:
@@ -475,7 +533,11 @@ class SearchTools:
             
         except Exception as e:
             logger.error(f"PubMed search failed: {e}")
-            
+
+        # ── Cache store ──────────────────────────────────────────
+        if results:
+            await self._cache.set_search_cache("pubmed", cache_query, results, self.CACHE_TTL)
+        # ─────────────────────────────────────────────────────────
         return results
     
     async def wikipedia_search(
@@ -485,14 +547,15 @@ class SearchTools:
     ) -> List[Dict[str, Any]]:
         """
         Search Wikipedia for general knowledge.
-        
-        Args:
-            query: Search query
-            num_results: Number of results
-            
-        Returns:
-            List of Wikipedia articles with summaries
+        Phase 2: checks Redis cache first.
         """
+        # ── Redis cache check ────────────────────────────────────
+        cache_query = f"wikipedia:{query}:{num_results}"
+        cached = await self._cache.get_search_cache("wikipedia", cache_query)
+        if cached is not None:
+            return cached
+        # ─────────────────────────────────────────────────────────
+
         results = []
         
         try:
@@ -543,7 +606,11 @@ class SearchTools:
             
         except Exception as e:
             logger.error(f"Wikipedia search failed: {e}")
-            
+
+        # ── Cache store ──────────────────────────────────────────
+        if results:
+            await self._cache.set_search_cache("wikipedia", cache_query, results, self.CACHE_TTL)
+        # ─────────────────────────────────────────────────────────
         return results
     
     async def fetch_full_content(self, url: str) -> Optional[str]:

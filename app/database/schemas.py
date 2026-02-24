@@ -305,6 +305,11 @@ class ResearchSession(Document):
     quality_score: Optional[float] = Field(default=None, ge=0.0, le=5.0)
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     
+    # Inter-agent pipeline data — agents query this by session_id instead
+    # of receiving raw payloads.  Keys: "patterns", "key_insights",
+    # "contradictions", "organized_findings", "bias_analysis", etc.
+    pipeline_data: Dict[str, Any] = Field(default_factory=dict)
+
     # Error tracking
     error: Optional[str] = None
     error_message: Optional[str] = None

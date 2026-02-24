@@ -176,14 +176,21 @@ Evaluate:
 2. What is the main research objective?
 3. Are there any ambiguities that need clarification?
 4. What implicit assumptions might exist?
-5. Suggest a clarified/improved version if needed.
+5. Suggest a slightly clarified version ONLY if genuinely unclear.
+
+CRITICAL RULES for CLARIFIED_QUERY:
+- You MUST keep the EXACT SAME TOPIC as the original query.
+- Do NOT invent a new topic, broaden it, or replace it with a generic question.
+- If the query is already clear, return it UNCHANGED.
+- Only rephrase for search optimization (e.g., fixing typos or adding precision).
+- The clarified query must be recognizably about the same subject.
 
 Respond in this format:
 CLARITY: [clear/somewhat_clear/unclear]
 OBJECTIVE: [main research objective]
 AMBIGUITIES: [list any ambiguities]
 ASSUMPTIONS: [list implicit assumptions]
-CLARIFIED_QUERY: [improved version of the query]
+CLARIFIED_QUERY: [the original query, only rephrased if genuinely needed]
 SUGGESTIONS: [any suggestions for improvement]"""
         
         try:
@@ -313,21 +320,33 @@ SUGGESTIONS: [any suggestions for improvement]"""
         plan: Dict[str, Any],
         original_context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Prepare final context for research execution."""
+        """Prepare final context for research execution.
+
+        CRITICAL: The user's original query is always preserved as the
+        primary ``query``.  The LLM-generated 'clarified_query' is stored
+        separately as ``search_hints`` so the Researcher can optionally
+        use it as additional search terms — but it NEVER replaces the
+        user's query.
+        """
         
-        # Use clarified query if available
-        final_query = analysis.get("clarified_query", query)
+        # ALWAYS keep the user's original query as the primary query.
+        # The clarified version is kept only as an optional search hint.
+        final_query = query
+        clarified = analysis.get("clarified_query", query)
         
-        # Apply any modifications
+        # Apply supervised-mode modifications (user explicitly changed query)
         if self.modifications:
             if "query" in self.modifications:
                 final_query = self.modifications["query"]
             if "focus_areas" in self.modifications:
                 plan["focus_areas"] = self.modifications["focus_areas"]
         
+        logger.info(f"UserProxy final_query='{final_query}' | clarified='{clarified}'")
+        
         return {
             "query": final_query,
             "original_query": query,
+            "search_hints": clarified if clarified != query else "",
             "focus_areas": plan.get("focus_areas", []),
             "source_preferences": plan.get("source_preferences", []),
             "max_sources": original_context.get("max_sources", 300),

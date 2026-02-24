@@ -226,14 +226,30 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     
     Clients connect here to receive real-time updates about research progress.
     Also handles bidirectional communication for supervised mode feedback.
+    A server-initiated ping is sent every 15 s to keep the connection alive
+    through proxies and load balancers.
     """
     await manager.connect(websocket, session_id)
-    
-    try:
+
+    async def heartbeat_sender():
+        """Send a ping frame every 15 s to prevent idle-timeout disconnects."""
+        try:
+            while True:
+                await asyncio.sleep(15)
+                try:
+                    await websocket.send_json({
+                        "type": "ping",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                except Exception:
+                    break
+        except asyncio.CancelledError:
+            pass
+
+    async def message_receiver():
+        """Receive and handle client messages."""
         while True:
-            # Receive messages from client
             data = await websocket.receive_text()
-            
             try:
                 message = json.loads(data)
                 await handle_client_message(session_id, message)
@@ -243,11 +259,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     "type": "error",
                     "message": "Invalid JSON format"
                 })
-            
+
+    heartbeat_task = asyncio.create_task(heartbeat_sender())
+    try:
+        await message_receiver()
     except WebSocketDisconnect:
-        manager.disconnect(websocket, session_id)
+        pass
     except Exception as e:
         logger.error(f"WebSocket error for session {session_id}: {e}")
+    finally:
+        heartbeat_task.cancel()
         manager.disconnect(websocket, session_id)
 
 

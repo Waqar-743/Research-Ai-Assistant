@@ -142,8 +142,15 @@ export function connectWebSocket(
 
   ws.onmessage = (ev) => {
     try {
-      const data = JSON.parse(ev.data) as WSMessage;
-      onMessage(data);
+      const data = JSON.parse(ev.data);
+      // Respond to server heartbeat pings to keep the connection alive
+      if (data.type === 'ping') {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'pong' }));
+        }
+        return;
+      }
+      onMessage(data as WSMessage);
     } catch {
       /* ignore non-JSON frames */
     }

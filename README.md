@@ -1,234 +1,269 @@
 # Multi-Agent Research Assistant
 
-A sophisticated FastAPI backend that leverages multiple AI agents to conduct comprehensive research, answer complex questions, and synthesize information from multiple sources.
+Full-stack research platform with a FastAPI backend and a React + Vite frontend. It orchestrates multiple AI agents for web research, fact-checking, report generation, and document analysis — backed by MongoDB state management, Redis caching/Pub-Sub, and Sentry observability.
 
+## Features
 
+- Multi-agent research workflow (User Proxy, Researcher, Analyst, Fact-Checker, Report Generator, Document Analyzer)
+- **MongoDB pipeline state management** — agent outputs persist to the database after each stage; only a `session_id` travels between agents
+- **Redis caching** — search results cached for 24 hours with SHA-256 keyed entries, reducing duplicate API calls
+- **Redis Pub/Sub** — real-time progress events published and consumed for live status updates
+- **Sentry error tracking & performance monitoring** — spans on every LLM call and agent execution, 30 % trace sample rate
+- Real-time progress updates via WebSocket
+- Document upload and analysis (PDF, DOCX, TXT, MD) with GridFS storage
+- Hybrid research (web + uploaded documents)
+- Citation extraction and formatting (APA, MLA, Chicago, Harvard)
+- Report generation and export support
+- User settings API for model and workflow preferences
 
-##  Features
+## Tech Stack
 
-- **Professional UI Dashboard**: Modern, glassmorphism-inspired research dashboard with pipeline visualization.
-- **Multi-Agent Orchestration**: 5 specialized AI agents working in concert (User Proxy, Researcher, Analyst, Fact-Checker, Report Generator).
-- **Advanced Quality Pipeline**: 
-  - **Relevance Filtering**: Multi-stage (Keyword + LLM) filtering to eliminate off-topic sources.
-  - **Dynamic Deduplication**: Intelligent merging of overlapping findings.
-  - **Enhanced Fact-Checking**: Rigorous verification against 25+ independent sources.
-- **Real-time Progress**: WebSocket support with fallbacks for live pipeline tracking.
-- **Multiple Data Sources**: Google, SerpAPI, NewsAPI, ArXiv, PubMed, Wikipedia.
-- **Rich Report Generation**: Professional Markdown, HTML, and PDF formats with automatic TOC.
-- **Citation Management**: APA, MLA, Chicago styles with dynamic reference generation.
-- **Configurable Research Mode**: Auto (autonomous) or Supervised (human approval checkpoints).
+| Layer | Technology |
+|-------|------------|
+| **Backend** | FastAPI · Beanie ODM · Motor · MongoDB Atlas |
+| **Frontend** | React 19 · TypeScript · Vite · Tailwind CSS 4 |
+| **AI Routing** | OpenRouter (DeepSeek, Claude 3.5 Sonnet, GPT-4o) |
+| **Cache / Pub-Sub** | Redis (Heroku Redis / Upstash) |
+| **Observability** | Sentry (FastAPI + Starlette integrations) |
+| **Realtime** | WebSocket `/ws/{session_id}` |
 
-## 🤖 Agent Architecture
+## Architecture Overview
 
-| Agent | Role | Capabilities |
-|-------|------|--------------|
-| **User Proxy** | Orchestrator | Query clarification, focus area refinement, human oversight. |
-| **Researcher** | Data Gatherer | Parallel search execution, multi-stage relevance filtering (Keyword + LLM). |
-| **Analyst** | Synthesis | Pattern identification, contradiction detection, trend analysis. |
-| **Fact-Checker** | Auditor | Statistics verification, source credibility assessment, bias detection. |
-| **Report Generator** | Author | Executive summary creation, citations, formatting (MD, HTML, PDF). |
+```
+┌─────────────┐    WebSocket / REST     ┌──────────────┐
+│  React App  │ ◄──────────────────────► │  FastAPI API │
+│  (Vercel)   │                          │  (Heroku)    │
+└─────────────┘                          └──────┬───────┘
+                                                │
+                          ┌─────────────────────┼─────────────────────┐
+                          │                     │                     │
+                   ┌──────▼──────┐     ┌────────▼────────┐   ┌───────▼───────┐
+                   │  MongoDB    │     │   Redis Cache   │   │    Sentry     │
+                   │  Atlas      │     │   + Pub/Sub     │   │  Monitoring   │
+                   └─────────────┘     └─────────────────┘   └───────────────┘
+```
 
-## 🚀 Quick Start
+### Agent Pipeline & State Flow
+
+```
+UserProxy ──► Researcher ──► Analyst ──► FactChecker ──► ReportGenerator
+                 │               │             │
+                 ▼               ▼             ▼
+            save sources   save findings   save validated
+            to MongoDB     + pipeline_data  findings to
+                                           pipeline_data
+```
+
+Each agent queries MongoDB by `session_id` to load data from previous stages — no large payloads are passed in memory.
+
+## Agent Architecture
+
+| Agent | Role | LLM Model | Core Responsibility |
+|-------|------|-----------|----------------------|
+| User Proxy | Orchestrator | — | Coordinates workflow and user-facing control flow |
+| Researcher | Discovery | DeepSeek | Collects and filters sources from external providers |
+| Analyst | Synthesis | Claude 3.5 Sonnet | Extracts insights, trends, and contradictions |
+| Fact-Checker | Validation | GPT-4o | Verifies claims and confidence across evidence |
+| Report Generator | Output | DeepSeek | Produces final structured report with citations |
+| Document Analyzer | Documents | — | Processes uploaded files and extracts findings |
+
+## Quick Start (Local)
 
 ### Prerequisites
 
 - Python 3.11+
-- MongoDB 7.0+ (Local or Docker)
-- OpenRouter API Key
+- Node.js 20+
+- MongoDB 7+ (or MongoDB Atlas)
+- Redis (optional — caching degrades gracefully)
 
-### Installation & Run
-
-1. **Clone & Setup**
-   ```bash
-   git clone <repository-url>
-   cd Research-Assistant
-   python -m venv venv
-   .\venv\Scripts\activate  # Windows
-   pip install -r requirements.txt
-   ```
-
-2. **Configure environment**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your OpenRouter API Key
-   ```
-
-3. **Run Backend**
-   ```bash
-   python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-   ```
-
-4. **Run Frontend**
-   ```bash
-   # In a new terminal
-   python -m http.server 5500 --directory frontend
-   ```
-   Open [http://localhost:5500](http://localhost:5500) to start researching.
-
-### Using Docker
+### 1) Install backend dependencies
 
 ```bash
-# Development mode
+python -m venv venv
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # macOS / Linux
+pip install -r requirements.txt
+```
+
+### 2) Configure environment
+
+```bash
+copy .env.example .env
+```
+
+Required variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `OPENROUTER_API_KEY` | LLM routing via OpenRouter |
+| `MONGODB_URL` | MongoDB connection URI |
+| `MONGODB_DATABASE` | Database name |
+| `REDIS_URL` | Redis connection string (optional) |
+| `SENTRY_DSN` | Sentry DSN for error tracking (optional) |
+
+### 3) Install frontend dependencies
+
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+### 4) Run backend
+
+```bash
+python -m app.main
+```
+
+Backend runs at `http://localhost:8000`.
+
+### 5) Run frontend
+
+```bash
+cd frontend
+npm run dev
+```
+
+Frontend runs at `http://localhost:5500`.
+
+## Docker
+
+```bash
+# Development
 docker compose up -d
 
-# With MongoDB admin UI
+# Development + debug profile
 docker compose --profile debug up -d
 
-# Production mode
+# Production compose
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
-## 📚 API Documentation
+## API Docs
 
-Once running, access the API documentation at:
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+- Swagger UI: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
 
-### Key Endpoints
+## Key API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/research/start` | POST | Start a new research session |
-| `/api/v1/research/{session_id}` | GET | Get research status |
-| `/api/v1/research/{session_id}/results` | GET | Get research results |
-| `/api/v1/history/` | GET | List all research sessions |
-| `/ws/{session_id}` | WebSocket | Real-time progress updates |
+### Research
 
-### Starting a Research Session
+- `POST /api/v1/research/start`
+- `GET /api/v1/research/{session_id}`
+- `GET /api/v1/research/{session_id}/results`
 
-```bash
-curl -X POST "http://localhost:8000/api/v1/research/start" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "What are the latest developments in quantum computing?",
-    "focus_areas": ["hardware", "algorithms", "applications"],
-    "research_mode": "auto",
-    "max_sources": 100,
-    "report_format": "markdown",
-    "citation_style": "APA"
-  }'
-```
+### Documents
 
-### WebSocket Connection
+- `POST /api/v1/documents/upload`
+- `GET /api/v1/documents`
+- `GET /api/v1/documents/{document_id}`
+- `DELETE /api/v1/documents/{document_id}`
 
-```javascript
-const ws = new WebSocket('ws://localhost:8000/ws/{session_id}');
+### Settings
 
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  console.log('Update:', data);
-  // data.type: 'agent_status_update' | 'phase_update' | 'research_complete' | 'research_error'
-  // data.agent: 'researcher' | 'analyst' | 'fact_checker' | 'report_generator'
-  // data.status: 'idle' | 'in_progress' | 'completed' | 'failed'
-  // data.progress: 0-100
-};
-```
+- `GET /api/v1/settings`
+- `PUT /api/v1/settings`
+- `DELETE /api/v1/settings`
 
-## 🔧 Configuration
+### Realtime
 
-### Environment Variables
+- `WS /ws/{session_id}`
+
+## Configuration
+
+### All environment variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ENVIRONMENT` | Environment (development/production) | development |
-| `DEBUG` | Enable debug mode | true |
-| `MONGODB_URL` | MongoDB connection string | mongodb://localhost:27017 |
-| `OPENROUTER_API_KEY` | OpenRouter API key | (required) |
-| `GOOGLE_API_KEY` | Google Custom Search API key | (required) |
-| `GOOGLE_CSE_ID` | Google Custom Search Engine ID | (required) |
-| `NEWSAPI_KEY` | NewsAPI key | (optional) |
+| `FASTAPI_HOST` | Backend host | `0.0.0.0` |
+| `FASTAPI_PORT` | Backend port | `8000` |
+| `FASTAPI_DEBUG` | Debug/reload mode | `false` |
+| `MONGODB_URL` | Mongo connection URI | `mongodb://localhost:27017` |
+| `MONGODB_DATABASE` | Database name | `research_assistant_db` |
+| `OPENROUTER_API_KEY` | OpenRouter key | _(required)_ |
+| `GOOGLE_API_KEY` | Google API key | optional |
+| `GOOGLE_SEARCH_ENGINE_ID` | Custom Search Engine ID | optional |
+| `SERPAPI_KEY` | SerpAPI key | optional |
+| `NEWSAPI_KEY` | News API key | optional |
+| `REDIS_URL` | Redis connection URI (`redis://` or `rediss://`) | optional |
+| `SENTRY_DSN` | Sentry Data Source Name | optional |
 
-### Research Modes
+## Testing
 
-- **Auto Mode** (default): Research runs autonomously without human intervention
-- **Supervised Mode**: Pauses at key checkpoints for human approval and feedback
-
-## 📁 Project Structure
-
+```bash
+pytest                   # run all 18 tests
+pytest tests/ -v         # verbose output
 ```
+
+## Deployment
+
+### Recommended Production Stack
+
+| Service | Platform | Notes |
+|---------|----------|-------|
+| Backend | **Heroku** | Dyno runs `uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
+| Frontend | **Vercel** | Auto-deploys from `frontend/` on push |
+| Database | **MongoDB Atlas** | Free M0 cluster via GitHub Student Pack |
+| Cache | **Heroku Redis** or **Upstash** | Attach as Heroku add-on or separate |
+| Monitoring | **Sentry** | Free tier via GitHub Student Pack |
+
+### Heroku Backend Deployment
+
+1. Create a Heroku app and add the **Heroku Redis** add-on.
+2. Set config vars:
+   ```
+   OPENROUTER_API_KEY=...
+   MONGODB_URL=mongodb+srv://...
+   MONGODB_DATABASE=research_assistant_db
+   SENTRY_DSN=https://...
+   ```
+   `REDIS_URL` is auto-set by the Heroku Redis add-on.
+3. Add a `Procfile`:
+   ```
+   web: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+   ```
+4. Push to Heroku: `git push heroku main`
+
+Once deployed, the backend runs entirely on Heroku — you do **not** run it locally in production. Local execution is only for development.
+
+### Vercel Frontend Deployment
+
+1. Import the repo into Vercel; set **Root Directory** to `frontend`.
+2. Set `VITE_API_URL` to your Heroku app URL (e.g. `https://my-app.herokuapp.com`).
+3. Vercel auto-builds with `npm run build` on every push.
+
+## Project Structure
+
+```text
 Research-Assistant/
 ├── app/
-│   ├── agents/              # AI Agent implementations
-│   │   ├── base_agent.py
-│   │   ├── researcher.py
-│   │   ├── analyst.py
-│   │   ├── fact_checker.py
-│   │   ├── report_generator.py
-│   │   ├── user_proxy.py
-│   │   └── orchestrator.py
-│   ├── api/                 # API endpoints
-│   │   ├── v1/
-│   │   │   ├── research.py
-│   │   │   ├── history.py
-│   │   │   ├── status.py
-│   │   │   └── health.py
+│   ├── agents/          # AI agent implementations
+│   ├── api/
+│   │   ├── v1/          # Versioned REST endpoints
 │   │   └── websocket.py
-│   ├── database/            # Database layer
-│   │   ├── connection.py
-│   │   ├── schemas.py
-│   │   └── repositories.py
-│   ├── tools/               # Agent tools
-│   │   ├── search_tools.py
-│   │   ├── validation_tools.py
-│   │   ├── formatting_tools.py
-│   │   └── llm_tools.py
-│   ├── services/            # Business logic
-│   ├── middleware/          # HTTP middleware
-│   ├── models/              # Pydantic models
-│   ├── utils/               # Utilities
-│   ├── config.py            # Configuration
-│   └── main.py              # Application entry
-├── docker/                  # Docker configuration
-├── tests/                   # Test suite
+│   ├── database/        # Beanie schemas, repositories
+│   ├── middleware/       # Error handling, logging
+│   ├── models/          # Pydantic models
+│   ├── services/        # Research service, Redis cache
+│   ├── tools/           # Search, document, LLM tools
+│   ├── utils/           # Logging utilities
+│   ├── config.py        # Settings (env-driven)
+│   └── main.py          # FastAPI entry + Sentry init
+├── frontend/
+│   ├── src/
+│   ├── package.json
+│   └── vite.config.ts
+├── tests/
+├── docker/
 ├── docker-compose.yml
+├── docker-compose.prod.yml
 ├── Dockerfile
-├── requirements.txt
-└── README.md
+└── requirements.txt
 ```
 
-## 🧪 Testing
+## Contributing
 
-```bash
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=app
-
-# Run specific test file
-pytest tests/test_agents.py -v
-```
-
-## 🚢 Deployment
-
-### Azure Deployment
-
-1. Create an Azure Container App or App Service
-2. Set up Azure Cosmos DB for MongoDB API
-3. Configure environment variables in Azure
-4. Deploy using GitHub Actions or Azure CLI
-
-```bash
-# Azure CLI deployment
-az containerapp up \
-  --name research-assistant \
-  --resource-group my-rg \
-  --location eastus \
-  --source .
-```
-
-## 📄 License
-
-MIT License
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Open a Pull Request
-
-## 📞 Support
-
-For issues and questions, please open a GitHub issue.
+1. Create a branch from `main`
+2. Make changes
+3. Run tests (`pytest`)
+4. Open a Pull Request

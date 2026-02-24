@@ -1,12 +1,18 @@
 """
 Agent Orchestrator
 Coordinates the multi-agent research workflow.
+
+Phase 1 refactor: agents no longer pass raw text payloads through the
+``final_context`` dict.  After each agent completes, its output is
+persisted to MongoDB and subsequent agents receive only the session_id.
 """
 
 from typing import Dict, Any, Optional, Callable, List
 from datetime import datetime
 from enum import Enum
 import asyncio
+
+import sentry_sdk
 
 from app.agents.base_agent import AgentStatus
 from app.agents.researcher import ResearcherAgent
@@ -16,6 +22,10 @@ from app.agents.report_generator import ReportGeneratorAgent
 from app.agents.user_proxy import UserProxyAgent
 from app.config import settings
 from app.utils.logging import logger
+from app.database.repositories import (
+    ResearchRepository, SourceRepository, FindingRepository
+)
+from app.database.schemas import SourceType
 
 
 class WorkflowPhase(str, Enum):
@@ -173,6 +183,16 @@ class AgentOrchestrator:
             
             # Update context with clarified query
             final_context = user_proxy_result.get("final_context", context)
+
+            # SAFEGUARD: always preserve the user's original query.
+            # The UserProxy may have placed a clarified version in
+            # final_context["query"].  Overwrite with the original so
+            # every downstream agent works on the topic the user typed.
+            final_context["query"] = query
+            logger.info(
+                f"Orchestrator query safeguard: using original='{query}'"
+            )
+
             self.results["user_proxy"] = user_proxy_result
             
             # Phase 2: Research (Researcher)
@@ -190,10 +210,42 @@ class AgentOrchestrator:
                 return await self._handle_failure("researcher", researcher_result)
             
             self.results["researcher"] = researcher_result
-            
-            # Add sources and findings to context
-            final_context["sources"] = researcher_result.get("sources", [])
-            final_context["raw_findings"] = researcher_result.get("raw_findings", [])
+
+            # ── Phase 1 state management ──────────────────────────────
+            # Persist sources + raw findings to MongoDB; do NOT put them
+            # into final_context so downstream agents query the DB.
+            await self._persist_researcher_output(session_id, researcher_result)
+            # Verify sources actually landed in MongoDB
+            source_count = await SourceRepository.count_by_research(session_id)
+            if source_count == 0:
+                logger.warning("0 sources persisted after researcher run — retrying with broadened query")
+                sentry_sdk.capture_message(
+                    f"0 sources persisted for session {session_id}, retrying with broader query",
+                    level="warning",
+                )
+                await self._notify_progress(
+                    "researcher", "in_progress", 30,
+                    "No sources found — retrying with a broader search…"
+                )
+                # Build a broader retry context
+                retry_context = {**final_context}
+                retry_context["query"] = f"{query} overview research analysis"
+                retry_context["max_sources"] = max(max_sources, 100)
+                retry_result = await self._execute_agent(
+                    self.researcher, retry_context, "researcher"
+                )
+                if retry_result.get("status") != "failed":
+                    self.results["researcher"] = retry_result
+                    researcher_result = retry_result
+                    await self._persist_researcher_output(session_id, retry_result)
+                    source_count = await SourceRepository.count_by_research(session_id)
+                    logger.info(f"Retry persisted {source_count} sources")
+                else:
+                    logger.error("Retry also failed — continuing with 0 sources")
+            # Only lightweight refs travel in context from now on
+            final_context["session_id"] = session_id
+            final_context["sources_count"] = researcher_result.get("sources_count", {})
+            # ──────────────────────────────────────────────────────────
             
             # Supervised checkpoint after research
             if research_mode == "supervised":
@@ -214,12 +266,10 @@ class AgentOrchestrator:
                 return await self._handle_failure("analyst", analyst_result)
             
             self.results["analyst"] = analyst_result
-            
-            # Add analysis to context
-            final_context["organized_findings"] = analyst_result.get("organized_findings", [])
-            final_context["patterns"] = analyst_result.get("patterns", [])
-            final_context["key_insights"] = analyst_result.get("key_insights", [])
-            final_context["contradictions"] = analyst_result.get("contradictions", [])
+
+            # ── Phase 1 state management ──────────────────────────────
+            await self._persist_analyst_output(session_id, analyst_result)
+            # ──────────────────────────────────────────────────────────
             
             # Supervised checkpoint after analysis
             if research_mode == "supervised":
@@ -241,26 +291,22 @@ class AgentOrchestrator:
                 logger.warning("Fact-checking failed, continuing with unverified data")
                 self.errors.append("Fact-checking incomplete")
                 
-                # CRITICAL: Still pass findings through so report generator has data
-                unverified_findings = final_context.get("organized_findings", [])
-                for f in unverified_findings:
-                    f["verified"] = False
-                    f["confidence_score"] = 0.5
-                    f["verification_verdict"] = "unverified"
-                final_context["validated_findings"] = unverified_findings
-                final_context["confidence_summary"] = {
-                    "overall_confidence": 0.5,
-                    "confidence_level": "medium",
-                    "verified_findings": 0,
-                    "total_findings": len(unverified_findings),
-                    "note": "Fact-checking failed; findings are unverified"
-                }
+                # Persist a fallback confidence_summary so report_generator can load it
+                await ResearchRepository.save_pipeline_data(
+                    session_id, "confidence_summary", {
+                        "overall_confidence": 0.5,
+                        "confidence_level": "medium",
+                        "verified_findings": 0,
+                        "total_findings": 0,
+                        "note": "Fact-checking failed; findings are unverified"
+                    }
+                )
             else:
                 self.results["fact_checker"] = fact_checker_result
                 
-                # Update with validated findings
-                final_context["validated_findings"] = fact_checker_result.get("validated_findings", [])
-                final_context["confidence_summary"] = fact_checker_result.get("confidence_summary", {})
+                # ── Phase 1 state management ──────────────────────────
+                await self._persist_fact_checker_output(session_id, fact_checker_result)
+                # ──────────────────────────────────────────────────────
             
             # Phase 5: Report Generation (Report Generator)
             self.current_phase = WorkflowPhase.REPORT_GENERATION
@@ -318,39 +364,48 @@ class AgentOrchestrator:
         context: Dict[str, Any],
         agent_key: str
     ) -> Dict[str, Any]:
-        """Execute a single agent with error handling."""
+        """Execute a single agent with error handling and Sentry context."""
         
         if self.is_cancelled:
             raise asyncio.CancelledError()
         
-        try:
-            agent.reset()
-            result = await asyncio.wait_for(
-                agent.execute(context),
-                timeout=agent.timeout
-            )
-            return result
-            
-        except asyncio.TimeoutError:
-            logger.error(f"Agent {agent.name} timed out")
-            await self._notify_progress(
-                agent_key, "failed", 0,
-                error=f"{agent.name} timed out"
-            )
-            return {
-                "status": "failed",
-                "error": f"{agent.name} execution timed out"
-            }
-        except Exception as e:
-            logger.error(f"Agent {agent.name} failed: {e}")
-            await self._notify_progress(
-                agent_key, "failed", 0,
-                error=str(e)
-            )
-            return {
-                "status": "failed",
-                "error": str(e)
-            }
+        # Phase 3: Sentry span + tag for per-agent tracing
+        with sentry_sdk.start_span(op="agent.execute", description=agent.name) as span:
+            span.set_data("agent", agent_key)
+            span.set_data("session_id", self.session_id)
+            sentry_sdk.set_tag("agent", agent_key)
+            sentry_sdk.set_tag("session_id", self.session_id)
+
+            try:
+                agent.reset()
+                result = await asyncio.wait_for(
+                    agent.execute(context),
+                    timeout=agent.timeout
+                )
+                return result
+                
+            except asyncio.TimeoutError:
+                logger.error(f"Agent {agent.name} timed out")
+                sentry_sdk.capture_message(f"Agent {agent.name} timed out", level="warning")
+                await self._notify_progress(
+                    agent_key, "failed", 0,
+                    error=f"{agent.name} timed out"
+                )
+                return {
+                    "status": "failed",
+                    "error": f"{agent.name} execution timed out"
+                }
+            except Exception as e:
+                logger.error(f"Agent {agent.name} failed: {e}")
+                sentry_sdk.capture_exception(e)
+                await self._notify_progress(
+                    agent_key, "failed", 0,
+                    error=str(e)
+                )
+                return {
+                    "status": "failed",
+                    "error": str(e)
+                }
     
     async def _checkpoint(self, checkpoint_name: str, data: Dict[str, Any]):
         """Handle checkpoint in supervised mode."""
@@ -406,6 +461,107 @@ class AgentOrchestrator:
             "partial_results": self.results
         }
     
+    # =================================================================
+    # Phase 1: MongoDB persistence helpers — save agent outputs to DB
+    # =================================================================
+    async def _persist_researcher_output(
+        self, session_id: str, result: Dict[str, Any]
+    ):
+        """Save sources and raw findings to MongoDB after researcher completes."""
+        try:
+            sources = result.get("sources", [])
+            raw_findings = result.get("raw_findings", [])
+
+            # Bulk-insert source documents
+            source_dicts = []
+            for s in sources[:200]:
+                source_dicts.append({
+                    "research_id": session_id,
+                    "title": s.get("title", ""),
+                    "url": s.get("url", ""),
+                    "content_preview": s.get("snippet", "") or s.get("description", ""),
+                    "api_source": s.get("api_source", "unknown"),
+                    "source_type": self._map_source_type(s.get("source_type")),
+                    "author": s.get("author"),
+                    "published_at": s.get("published_at"),
+                    "metadata": s,
+                })
+            if source_dicts:
+                await SourceRepository.create_many(source_dicts)
+
+            # Bulk-insert finding documents
+            finding_dicts = []
+            for f in raw_findings:
+                content = f.get("content", "")
+                finding_dicts.append({
+                    "research_id": session_id,
+                    "title": content[:80] if content else "Finding",
+                    "content": content,
+                    "finding_type": "insight",
+                    "agent_generated_by": "researcher",
+                    "metadata": {
+                        "source_refs": f.get("source_refs", ""),
+                        "resolved_sources": f.get("resolved_sources", []),
+                        "preliminary_credibility": f.get("preliminary_credibility", "medium"),
+                    },
+                })
+            if finding_dicts:
+                await FindingRepository.create_many(finding_dicts)
+
+            # Update session metrics
+            await ResearchRepository.update_metrics(
+                session_id,
+                total_sources=len(source_dicts),
+                total_findings=len(finding_dicts),
+            )
+            logger.info(
+                f"Persisted researcher output: {len(source_dicts)} sources, "
+                f"{len(finding_dicts)} findings"
+            )
+        except Exception as e:
+            logger.error(f"Failed to persist researcher output: {e}")
+            sentry_sdk.capture_exception(e)
+
+    async def _persist_analyst_output(
+        self, session_id: str, result: Dict[str, Any]
+    ):
+        """Save analyst intermediate results to pipeline_data in MongoDB."""
+        try:
+            for key in ("organized_findings", "patterns", "key_insights", "contradictions"):
+                value = result.get(key, [])
+                if value:
+                    await ResearchRepository.save_pipeline_data(session_id, key, value)
+            logger.info("Persisted analyst output to pipeline_data")
+        except Exception as e:
+            logger.error(f"Failed to persist analyst output: {e}")
+            sentry_sdk.capture_exception(e)
+
+    async def _persist_fact_checker_output(
+        self, session_id: str, result: Dict[str, Any]
+    ):
+        """Save validated findings & confidence to pipeline_data."""
+        try:
+            for key in ("validated_findings", "confidence_summary", "bias_analysis"):
+                value = result.get(key)
+                if value:
+                    await ResearchRepository.save_pipeline_data(session_id, key, value)
+            logger.info("Persisted fact-checker output to pipeline_data")
+        except Exception as e:
+            logger.error(f"Failed to persist fact-checker output: {e}")
+            sentry_sdk.capture_exception(e)
+
+    @staticmethod
+    def _map_source_type(source_type: Optional[str]) -> str:
+        mapping = {
+            "academic": "academic",
+            "news": "news",
+            "official": "official",
+            "wikipedia": "wikipedia",
+            "wiki": "wikipedia",
+            "blog": "blog",
+        }
+        return mapping.get((source_type or "").lower(), "other")
+
     def _build_final_response(self) -> Dict[str, Any]:
         """Build the final response with all results."""
         
