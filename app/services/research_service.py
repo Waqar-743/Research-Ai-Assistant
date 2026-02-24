@@ -81,6 +81,17 @@ class ResearchService:
         self.active_orchestrators[session_id] = orchestrator
         
         # Set up progress callback for WebSocket updates
+        # Track each agent's progress locally so we can compute a
+        # monotonically-increasing overall_progress in every WS message.
+        _local_agent_statuses: Dict[str, Any] = {}
+        _agent_weights = {
+            "user_proxy": 10,
+            "researcher": 30,
+            "analyst": 25,
+            "fact_checker": 20,
+            "report_generator": 15
+        }
+
         async def progress_callback(
             agent_name: str,
             status: str,
@@ -88,14 +99,33 @@ class ResearchService:
             output: Optional[str] = None,
             error: Optional[str] = None
         ):
-            # Send WebSocket update
+            # Keep a local snapshot of every named agent
+            if agent_name in _agent_weights:
+                _local_agent_statuses[agent_name] = {
+                    "status": status,
+                    "progress": progress
+                }
+
+            # Compute weighted overall progress (same formula as DB layer)
+            overall = 0
+            for _name, _weight in _agent_weights.items():
+                _state = _local_agent_statuses.get(_name, {})
+                if _state.get("status") == "completed":
+                    overall += _weight
+                elif _state.get("status") == "in_progress":
+                    overall += int(_weight * (_state.get("progress", 0) / 100))
+            overall_progress = min(overall, 100)
+
+            # Send WebSocket update — include overall_progress in data so the
+            # frontend never needs to guess which progress value is "pipeline-wide"
             await send_agent_update(
                 session_id=session_id,
                 agent_name=agent_name,
                 status=status,
                 progress=progress,
                 output=output,
-                error=error
+                error=error,
+                data={"overall_progress": overall_progress}
             )
             
             # Update database

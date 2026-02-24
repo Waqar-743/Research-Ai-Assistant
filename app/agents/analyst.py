@@ -135,14 +135,25 @@ Your analysis MUST be substantive and data-driven. Abstract statements without e
     ) -> List[Dict[str, Any]]:
         """Consolidate findings from multiple sources into unified themes."""
         
-        # Build context from sources — use more sources for better coverage
+        # Build source URL map so we can resolve "S1" etc. to {title, url} later
+        source_url_map: Dict[str, Dict[str, str]] = {
+            f"S{i+1}": {
+                "title": s.get("title", ""),
+                "url": s.get("url", ""),
+                "api_source": s.get("api_source", "")
+            }
+            for i, s in enumerate(sources[:60])
+        }
+
+        # Build context from sources — up to 60, 500-char snippets with URL
         source_context = []
-        for i, source in enumerate(sources[:40]):
+        for i, source in enumerate(sources[:60]):
             title = source.get("title", "Untitled")
-            snippet = source.get("snippet", "")[:300]
+            snippet = source.get("snippet", "")[:500]
+            url = source.get("url", "")
             source_type = source.get("source_type", "unknown")
             author = source.get("author", "") or ", ".join(source.get("authors", [])[:2])
-            source_context.append(f"[S{i+1}] ({source_type}) {title} by {author}: {snippet}")
+            source_context.append(f"[S{i+1}] ({source_type}) {title} by {author} | {url}\n  {snippet}")
         
         findings_context = []
         for i, finding in enumerate(raw_findings):
@@ -191,17 +202,31 @@ Respond in JSON format:
                 data = json.loads(json_match.group())
                 findings = data.get("consolidated_findings", [])
                 if findings:
+                    # Resolve "S1"-style source refs to structured {title, url} dicts
+                    for finding in findings:
+                        raw_refs = finding.get("source_refs", [])
+                        resolved = []
+                        if isinstance(raw_refs, list):
+                            for ref in raw_refs:
+                                if isinstance(ref, str) and ref in source_url_map:
+                                    resolved.append(source_url_map[ref])
+                                elif isinstance(ref, dict):
+                                    resolved.append(ref)
+                                else:
+                                    resolved.append({"title": str(ref), "url": ""})
+                        finding["resolved_sources"] = resolved
                     return findings
         except Exception as e:
             logger.warning(f"Consolidation parsing failed: {e}")
         
-        # Fallback: if raw findings exist, restructure them
+        # Fallback: if raw findings exist, restructure them and carry resolved_sources
         if raw_findings:
             return [{
                 "title": f.get("content", "Finding")[:80],
                 "content": f.get("content", ""),
                 "finding_type": f.get("type", "insight"),
                 "source_refs": [f.get("source_refs", "")],
+                "resolved_sources": f.get("resolved_sources", []),
                 "confidence": f.get("preliminary_credibility", "medium")
             } for f in raw_findings if f.get("content")]
         
@@ -418,6 +443,7 @@ List the insights in order of importance, one per line."""
                 "finding_type": finding.get("finding_type", "insight"),
                 "confidence": finding.get("confidence", "medium"),
                 "source_refs": finding.get("source_refs", []),
+                "resolved_sources": finding.get("resolved_sources", []),
                 "related_patterns": [],
                 "agent_generated_by": "analyst"
             }

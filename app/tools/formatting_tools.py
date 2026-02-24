@@ -477,7 +477,7 @@ Write the executive summary:"""
                 prompt=prompt,
                 model=settings.report_generator_model,
                 temperature=0.4,
-                max_tokens=300
+                max_tokens=800
             )
             
             # Ensure it's within length
@@ -514,8 +514,8 @@ Write the executive summary:"""
         
         # Group findings by type or theme
         findings_text = "\n".join([
-            f"- {f.get('title', 'Finding')}: {f.get('content', '')[:250]}"
-            for f in findings[:20]
+            f"[{i}] {f.get('title', 'Finding')}: {f.get('content', '')[:400]}"
+            for i, f in enumerate(findings)
         ])
         
         prompt = f"""Organize these research findings into logical report sections.

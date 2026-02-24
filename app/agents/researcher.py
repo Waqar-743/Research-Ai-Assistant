@@ -73,8 +73,11 @@ Output structured findings with clear source attribution and concrete data point
         focus_areas = context.get("focus_areas", [])
         source_preferences = context.get("source_preferences", [])
         max_sources = context.get("max_sources", 300)
-        
-        logger.info(f"Researcher starting search for: {query}")
+        research_mode = context.get("research_mode", "auto")
+        # Store as instance flag so inner methods can reference it
+        self._is_deep = research_mode == "deep"
+
+        logger.info(f"Researcher starting search for: {query} (mode={research_mode}, deep={self._is_deep})")
         
         try:
             await self._set_status(AgentStatus.IN_PROGRESS)
@@ -95,8 +98,9 @@ Output structured findings with clear source attribution and concrete data point
                 "wikipedia": []
             }
             
-            # Calculate results per source — keep moderate to avoid noise
-            results_per_source = max(5, min(15, max_sources // (len(search_queries) * 3)))
+            # Deep mode fetches significantly more per API call
+            base_per_source = max(5, min(15, max_sources // (len(search_queries) * 3)))
+            results_per_source = min(base_per_source * 2, 25) if self._is_deep else base_per_source
             
             for i, search_query in enumerate(search_queries):
                 progress = 10 + int((i / len(search_queries)) * 40)
@@ -212,7 +216,8 @@ Return only the queries, one per line, no numbering or explanation."""
         except Exception as e:
             logger.warning(f"Query generation failed: {e}")
         
-        return queries[:8]  # Limit to 8 queries
+        # Deep mode uses more queries for broader coverage
+        return queries[:12] if getattr(self, '_is_deep', False) else queries[:8]
     
     async def _filter_relevant_sources(
         self,
@@ -329,11 +334,12 @@ If none are relevant, respond with "NONE"."""
         if not sources:
             return []
         
-        # Process in batches to cover more sources
+        # Process in batches to cover more sources (deep mode covers 60 vs 45)
         all_findings = []
         batch_size = 15
-        
-        for batch_start in range(0, min(len(sources), 45), batch_size):
+        max_to_process = 60 if getattr(self, '_is_deep', False) else 45
+
+        for batch_start in range(0, min(len(sources), max_to_process), batch_size):
             batch = sources[batch_start:batch_start + batch_size]
             batch_findings = await self._extract_from_batch(query, batch, batch_start)
             all_findings.extend(batch_findings)
@@ -355,16 +361,24 @@ If none are relevant, respond with "NONE"."""
         if not sources:
             return []
         
-        # Build source summary
+        # Build source summary and a URL index for citation resolution
         source_summaries = []
+        source_url_index: Dict[int, Dict[str, str]] = {}
         for i, source in enumerate(sources):
             title = source.get("title", "Untitled")
-            snippet = source.get("snippet", "")[:400]
+            snippet = source.get("snippet", "")[:600]
+            url = source.get("url", "")
             author = source.get("author", "") or ", ".join(source.get("authors", [])[:2])
             year = source.get("published_at", "")
             if year and len(str(year)) > 4:
                 year = str(year)[:4]
-            source_summaries.append(f"[{offset + i + 1}] ({year}) {title} by {author}\n{snippet}")
+            api_src = source.get("api_source", "")
+            source_summaries.append(
+                f"[{offset + i + 1}] ({year}) {title} by {author} | {url}\n{snippet}"
+            )
+            source_url_index[offset + i + 1] = {
+                "title": title, "url": url, "api_source": api_src
+            }
         
         context = "\n\n".join(source_summaries)
         
@@ -392,10 +406,11 @@ CREDIBILITY: [high/medium/low]
         try:
             response = await self.think(prompt)
             
-            # Parse findings
+            # Parse findings and resolve source indices → {title, url} dicts
             findings = []
-            current_finding = {}
-            
+            current_finding: Dict[str, Any] = {}
+
+            import re as _re
             for line in response.split('\n'):
                 line = line.strip()
                 if line.startswith('FINDING:'):
@@ -403,17 +418,25 @@ CREDIBILITY: [high/medium/low]
                         findings.append(current_finding)
                     current_finding = {"content": line[8:].strip(), "type": "insight"}
                 elif line.startswith('SOURCES:'):
-                    current_finding["source_refs"] = line[8:].strip()
+                    raw_refs = line[8:].strip()
+                    current_finding["source_refs"] = raw_refs
+                    # Resolve numeric indices to structured source objects
+                    resolved: List[Dict[str, str]] = []
+                    for idx_str in _re.findall(r'\d+', raw_refs):
+                        idx = int(idx_str)
+                        if idx in source_url_index:
+                            resolved.append(source_url_index[idx])
+                    current_finding["resolved_sources"] = resolved
                 elif line.startswith('CREDIBILITY:'):
                     cred = line[12:].strip().lower()
                     current_finding["preliminary_credibility"] = cred
                 elif line == '---' and current_finding:
                     findings.append(current_finding)
                     current_finding = {}
-            
+
             if current_finding:
                 findings.append(current_finding)
-            
+
             return findings
             
         except Exception as e:

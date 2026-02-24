@@ -268,7 +268,7 @@ Return only the title, nothing else."""
                 )
             else:
                 content = await self._write_section_content(
-                    title, query, findings
+                    title, query, findings, sources
                 )
             
             written_sections.append({
@@ -335,8 +335,8 @@ Return only the title, nothing else."""
         display_findings = verified_findings or high_confidence or findings
         
         findings_summary = "\n".join([
-            f"- {f.get('title', 'Finding')}: {f.get('content', '')[:200]}"
-            for f in display_findings[:8]
+            f"[{i+1}] {f.get('title', 'Finding')}: {f.get('content', '')[:350]}"
+            for i, f in enumerate(display_findings[:15])
         ])
         
         if not findings_summary:
@@ -401,19 +401,42 @@ Write the enhanced content:"""
         self,
         title: str,
         query: str,
-        findings: List[Dict[str, Any]]
+        findings: List[Dict[str, Any]],
+        sources: Optional[List[Dict[str, Any]]] = None
     ) -> str:
         """Write new section content from scratch."""
-        
+
         relevant_findings = "\n".join([
-            f"- {f.get('title', '')}: {f.get('content', '')[:250]}"
-            for f in findings[:10]
+            f"[F{i+1}] {f.get('title', '')}: {f.get('content', '')[:400]}"
+            for i, f in enumerate(findings[:25])
         ])
-        
+
         if not relevant_findings:
             relevant_findings = "Limited findings available for this section."
-        
-        prompt = f"""Write content for this report section based on research findings.
+
+        # Collect source URLs from findings (supporting_sources & resolved_sources)
+        # so the LLM can emit inline Markdown hyperlinks
+        citation_map: Dict[str, str] = {}
+        for f in findings:
+            for s in f.get("supporting_sources", []):
+                if isinstance(s, dict) and s.get("url") and s.get("title"):
+                    citation_map[s["url"]] = s["title"]
+            for s in f.get("resolved_sources", []):
+                if isinstance(s, dict) and s.get("url") and s.get("title"):
+                    citation_map[s["url"]] = s["title"]
+        # Supplement with the raw sources list when available
+        if sources:
+            for s in sources[:30]:
+                u, t = s.get("url", ""), s.get("title", "")
+                if u and t and u not in citation_map:
+                    citation_map[u] = t
+
+        citation_block = ""
+        if citation_map:
+            lines = [f"  - [{t}]({u})" for u, t in list(citation_map.items())[:30]]
+            citation_block = "Available sources for inline citation:\n" + "\n".join(lines) + "\n"
+
+        prompt = f"""Write a detailed, evidence-rich section for a research report.
 
 Report Topic: {query}
 Section Title: {title}
@@ -421,21 +444,22 @@ Section Title: {title}
 Available Findings:
 {relevant_findings}
 
-Write 2-4 paragraphs that:
-1. Address the section topic thoroughly using SPECIFIC data from the findings
-2. Include actual numbers, statistics, and concrete evidence
-3. Are well-organized and professional
-4. Use citations referencing specific findings
-5. NEVER use placeholder text like [topic], [finding], [example] etc.
-6. If insufficient data exists for this section, explain what is known and what gaps remain
+{citation_block}
+Instructions:
+1. Write 3-6 well-developed paragraphs directly addressing the section topic
+2. Use SPECIFIC data, statistics, percentages, and concrete evidence from the findings above
+3. Include inline Markdown hyperlinks to cite sources wherever possible: [Source Title](URL)
+4. Use clear paragraph structure flowing from background → evidence → implications
+5. NEVER use placeholder text like [topic], [finding], [example], [limitation]
+6. If data is limited for this section, state what is known and clearly identify the gaps
+7. End with a brief synthesis paragraph contextualising the evidence
 
-Write the section content:"""
-        
+Write the section (minimum 250 words):"""
+
         try:
             return await self.think(prompt)
         except Exception as e:
             logger.warning(f"Section writing failed: {e}")
-            # Build a meaningful fallback from available findings instead of placeholder
             if findings:
                 fallback_parts = [f"This section covers key findings related to {title.lower()} for the research topic.\n"]
                 for f in findings[:5]:
@@ -454,15 +478,15 @@ Write the section content:"""
     ) -> str:
         """Generate executive summary."""
         
-        # Combine section content
+        # Combine section content — use 1500 chars per section for a richer summary
         full_content = "\n\n".join([
-            f"{s.get('title', '')}\n{s.get('content', '')[:500]}"
+            f"{s.get('title', '')}\n{s.get('content', '')[:1500]}"
             for s in sections
         ])
-        
+
         summary = await self.formatting_tools.create_summary(
             content=full_content,
-            max_length=600
+            max_length=1200
         )
         
         # Add confidence note

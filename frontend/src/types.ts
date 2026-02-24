@@ -50,6 +50,10 @@ export interface ReportSource {
   title: string;
   url: string;
   relevance: string;
+  domain?: string;
+  author?: string;
+  credibilityScore?: number;
+  apiSource?: string;
 }
 
 export interface ReportSection {

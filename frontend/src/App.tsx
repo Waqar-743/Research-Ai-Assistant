@@ -27,9 +27,75 @@ import {
   AgentState,
   ResearchHistory,
   ResearchReport,
+  ReportSource,
+  ReportSection,
   WSMessage,
 } from './types';
 import { researchService } from './services/researchService';
+
+/* ------------------------------------------------------------------ */
+/*  Map backend results → frontend ResearchReport                      */
+/* ------------------------------------------------------------------ */
+
+function mapResultsToReport(
+  res: Record<string, unknown>,
+): ResearchReport | undefined {
+  const report = res.report as Record<string, unknown> | undefined;
+  if (!report) return undefined;
+
+  const backendSources =
+    (res.sources as Array<Record<string, unknown>>) ?? [];
+  const backendFindings =
+    (res.findings as Array<Record<string, unknown>>) ?? [];
+
+  // Sections: backend uses "title", frontend uses "heading"
+  const rawSections =
+    (report.sections as Array<Record<string, unknown>>) ?? [];
+  const sections: ReportSection[] = rawSections.map((s) => ({
+    heading: (s.title as string) ?? (s.heading as string) ?? '',
+    content: (s.content as string) ?? '',
+  }));
+
+  // Sources: map SourceResponse → ReportSource
+  const sources: ReportSource[] = backendSources.map((s) => ({
+    title: (s.title as string) ?? 'Untitled Source',
+    url: (s.url as string) ?? '',
+    relevance: s.api_source
+      ? `Source: ${s.api_source} · Credibility: ${(((s.credibility_score as number) ?? 0) * 100).toFixed(0)}%`
+      : (s.content_preview as string) ?? '',
+    domain: (s.domain as string) ?? undefined,
+    author: (s.author as string) ?? undefined,
+    credibilityScore: (s.credibility_score as number) ?? undefined,
+    apiSource: (s.api_source as string) ?? undefined,
+  }));
+
+  // Findings: map FindingResponse → descriptive strings
+  const findings: string[] = backendFindings.map((f) => {
+    const title = (f.title as string) ?? '';
+    const content = (f.content as string) ?? '';
+    if (title && content && !content.startsWith(title))
+      return `${title} — ${content}`;
+    return content || title || 'Finding';
+  });
+
+  // Executive summary: prefer summary, fall back to first 800 chars of markdown
+  const summary = (report.summary as string) ?? '';
+  const mdContent = (report.markdown_content as string) ?? '';
+  const executiveSummary =
+    summary || (mdContent.length > 800 ? mdContent.slice(0, 800) + '…' : mdContent) || '';
+
+  return {
+    title: (report.title as string) ?? 'Research Report',
+    executiveSummary,
+    methodology: undefined,
+    tableOfContents:
+      sections.length > 0 ? sections.map((s) => s.heading) : undefined,
+    sections,
+    sources: sources.length > 0 ? sources : undefined,
+    findings: findings.length > 0 ? findings : undefined,
+    quality_score: (report.quality_score as number) ?? undefined,
+  };
+}
 
 /* ------------------------------------------------------------------ */
 /*  Reusable UI Components                                             */
@@ -183,6 +249,7 @@ export default function App() {
     { id: '5', name: 'Report Generator', description: 'Report creation', status: AgentStatus.PENDING, icon: 'file' },
   ]);
   const [report, setReport] = useState<ResearchReport | null>(null);
+  const [reportTab, setReportTab] = useState<'Report' | 'Findings' | 'Sources'>('Report');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
@@ -250,7 +317,16 @@ export default function App() {
                 : a,
             ),
           );
-          setProgress(msg.progress);
+
+          // Use the backend-computed weighted overall_progress.
+          // Fall back to msg.progress only for orchestrator-level updates.
+          // Always use Math.max so the bar NEVER goes backward.
+          const overallPct =
+            (msg.data?.overall_progress as number | undefined) ??
+            (msg.agent === 'orchestrator' ? msg.progress : undefined);
+          if (overallPct !== undefined) {
+            setProgress((prev) => Math.max(prev, overallPct));
+          }
 
           if (msg.output) {
             addLog(displayName, msg.output, 'info');
@@ -277,7 +353,7 @@ export default function App() {
             researchService
               .getResearchResults(sessionId)
               .then((res) => {
-                const r = (res as Record<string, unknown>).report as ResearchReport | undefined;
+                const r = mapResultsToReport(res as Record<string, unknown>);
                 if (r) {
                   setReport(r);
                   setView('report');
@@ -310,6 +386,7 @@ export default function App() {
     setLogs([]);
     setError(null);
     setReport(null);
+    setReportTab('Report');
     setAgents((prev) =>
       prev.map((a) => ({ ...a, status: AgentStatus.PENDING })),
     );
@@ -336,7 +413,8 @@ export default function App() {
       pollRef.current = setInterval(async () => {
         try {
           const status = await researchService.getResearchStatus(sid);
-          setProgress(status.progress);
+          // Guard: never let polling move the bar backward (WS may be ahead)
+          setProgress((prev) => Math.max(prev, status.progress));
 
           if (status.status === 'completed' || status.status === 'failed') {
             if (pollRef.current) clearInterval(pollRef.current);
@@ -347,7 +425,7 @@ export default function App() {
             view !== 'report'
           ) {
             const res = await researchService.getResearchResults(sid);
-            const r = (res as Record<string, unknown>).report as ResearchReport | undefined;
+            const r = mapResultsToReport(res as Record<string, unknown>);
             if (r) {
               setReport(r);
               setView('report');
@@ -1009,8 +1087,9 @@ ${report.sources?.length ? `<h2>Sources</h2><ul>${report.sources.map((s) => `<li
                             await researchService.getResearchResults(
                               item.id,
                             );
-                          const r = (res as Record<string, unknown>)
-                            .report as ResearchReport | undefined;
+                          const r = mapResultsToReport(
+                            res as Record<string, unknown>,
+                          );
                           if (r) {
                             setReport(r);
                             setOptions(item.options);
@@ -1112,138 +1191,198 @@ ${report.sources?.length ? `<h2>Sources</h2><ul>${report.sources.map((s) => `<li
               {/* Report content */}
               <div className="bg-white rounded-2xl shadow-2xl text-slate-900 overflow-hidden">
                 <div className="bg-slate-50 border-b border-slate-200 px-8 py-4 flex gap-8">
-                  {['Report', 'Findings', 'Sources'].map(
+                  {(['Report', 'Findings', 'Sources'] as const).map(
                     (tab) => (
                       <button
                         key={tab}
+                        onClick={() => setReportTab(tab)}
                         className={`text-sm font-bold pb-2 border-b-2 transition-all ${
-                          tab === 'Report'
+                          reportTab === tab
                             ? 'border-indigo-600 text-indigo-600'
                             : 'border-transparent text-slate-400 hover:text-slate-600'
                         }`}
                       >
                         {tab}
+                        {tab === 'Sources' && report.sources
+                          ? ` (${report.sources.length})`
+                          : tab === 'Findings' && report.findings
+                            ? ` (${report.findings.length})`
+                            : ''}
                       </button>
                     ),
                   )}
                 </div>
 
                 <div className="p-8 md:p-12 max-w-4xl mx-auto prose prose-slate prose-headings:font-black prose-h2:text-3xl prose-h3:text-xl prose-p:text-slate-600 prose-li:text-slate-600">
-                  {/* Table of Contents */}
-                  {report.tableOfContents &&
-                    report.tableOfContents.length > 0 && (
+
+                  {/* ---- REPORT TAB ---- */}
+                  {reportTab === 'Report' && (
+                    <>
+                      {/* Table of Contents */}
+                      {report.tableOfContents &&
+                        report.tableOfContents.length > 0 && (
+                          <section className="mb-12">
+                            <h2 className="text-2xl font-black mb-6">
+                              Table of Contents
+                            </h2>
+                            <ul className="space-y-2 list-none p-0">
+                              {report.tableOfContents.map(
+                                (item, i) => (
+                                  <li
+                                    key={i}
+                                    className="flex items-center gap-3 text-indigo-600 font-medium"
+                                  >
+                                    <div className="w-1 h-1 bg-indigo-600 rounded-full" />
+                                    {item}
+                                  </li>
+                                ),
+                              )}
+                            </ul>
+                          </section>
+                        )}
+
+                      {/* Executive Summary */}
                       <section className="mb-12">
-                        <h2 className="text-2xl font-black mb-6">
-                          Table of Contents
+                        <h2 className="text-3xl font-black mb-4">
+                          Executive Summary
                         </h2>
-                        <ul className="space-y-2 list-none p-0">
-                          {report.tableOfContents.map(
-                            (item, i) => (
-                              <li
-                                key={i}
-                                className="flex items-center gap-3 text-indigo-600 font-medium"
-                              >
-                                <div className="w-1 h-1 bg-indigo-600 rounded-full" />
-                                {item}
-                              </li>
-                            ),
-                          )}
-                        </ul>
+                        <div className="text-lg leading-relaxed text-slate-700">
+                          <Markdown>{report.executiveSummary}</Markdown>
+                        </div>
                       </section>
-                    )}
 
-                  {/* Executive Summary */}
-                  <section className="mb-12">
-                    <h2 className="text-3xl font-black mb-4">
-                      Executive Summary
-                    </h2>
-                    <div className="text-lg leading-relaxed text-slate-700">
-                      <Markdown>{report.executiveSummary}</Markdown>
-                    </div>
-                  </section>
+                      {/* Methodology */}
+                      {report.methodology && (
+                        <section className="mb-12">
+                          <h2 className="text-3xl font-black mb-4">
+                            Research Methodology
+                          </h2>
+                          <div className="bg-slate-50 p-6 rounded-xl border border-slate-100 italic text-slate-600">
+                            <Markdown>{report.methodology}</Markdown>
+                          </div>
+                        </section>
+                      )}
 
-                  {/* Methodology */}
-                  {report.methodology && (
-                    <section className="mb-12">
-                      <h2 className="text-3xl font-black mb-4">
-                        Research Methodology
-                      </h2>
-                      <div className="bg-slate-50 p-6 rounded-xl border border-slate-100 italic text-slate-600">
-                        <Markdown>{report.methodology}</Markdown>
-                      </div>
-                    </section>
+                      {/* Sections */}
+                      {report.sections?.map((section, i) => (
+                        <section key={i} className="mb-12">
+                          <h2 className="text-3xl font-black mb-4">
+                            {section.heading}
+                          </h2>
+                          <div className="space-y-4">
+                            <Markdown>{section.content}</Markdown>
+                          </div>
+                        </section>
+                      ))}
+                    </>
                   )}
 
-                  {/* Sections */}
-                  {report.sections?.map((section, i) => (
-                    <section key={i} className="mb-12">
-                      <h2 className="text-3xl font-black mb-4">
-                        {section.heading}
-                      </h2>
-                      <div className="space-y-4">
-                        <Markdown>{section.content}</Markdown>
-                      </div>
-                    </section>
-                  ))}
-
-                  {/* Findings */}
-                  {report.findings && report.findings.length > 0 && (
-                    <section className="mb-12 pt-12 border-t border-slate-200">
+                  {/* ---- FINDINGS TAB ---- */}
+                  {reportTab === 'Findings' && (
+                    <section>
                       <h2 className="text-2xl font-black mb-6">
                         Key Findings
+                        {report.findings && (
+                          <span className="ml-3 text-sm font-medium text-slate-400">
+                            ({report.findings.length})
+                          </span>
+                        )}
                       </h2>
-                      <ul className="space-y-3">
-                        {report.findings.map((f, i) => (
-                          <li
-                            key={i}
-                            className="flex items-start gap-3"
-                          >
-                            <CheckCircle2
-                              size={18}
-                              className="text-emerald-500 mt-0.5 shrink-0"
-                            />
-                            <span>{f}</span>
-                          </li>
-                        ))}
-                      </ul>
+                      {report.findings && report.findings.length > 0 ? (
+                        <ul className="space-y-4">
+                          {report.findings.map((f, i) => (
+                            <li
+                              key={i}
+                              className="flex items-start gap-3 p-4 bg-emerald-50 rounded-lg border border-emerald-100"
+                            >
+                              <CheckCircle2
+                                size={18}
+                                className="text-emerald-500 mt-0.5 shrink-0"
+                              />
+                              <span className="text-slate-700">{f}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-slate-400 italic">
+                          No findings were recorded for this research session.
+                        </p>
+                      )}
                     </section>
                   )}
 
-                  {/* Sources */}
-                  {report.sources && report.sources.length > 0 && (
-                    <section className="pt-12 border-t border-slate-200">
+                  {/* ---- SOURCES TAB ---- */}
+                  {reportTab === 'Sources' && (
+                    <section>
                       <h2 className="text-2xl font-black mb-6">
                         Sources & References
+                        {report.sources && (
+                          <span className="ml-3 text-sm font-medium text-slate-400">
+                            ({report.sources.length})
+                          </span>
+                        )}
                       </h2>
-                      <div className="grid gap-4">
-                        {report.sources.map((source, i) => (
-                          <div
-                            key={i}
-                            className="p-4 bg-slate-50 rounded-lg border border-slate-100 flex items-start justify-between group"
-                          >
-                            <div>
-                              <h4 className="font-bold text-slate-900 mb-1">
-                                {source.title}
-                              </h4>
-                              <p className="text-xs text-slate-500">
-                                {source.relevance}
-                              </p>
+                      {report.sources && report.sources.length > 0 ? (
+                        <div className="grid gap-4">
+                          {report.sources.map((source, i) => (
+                            <div
+                              key={i}
+                              className="p-4 bg-slate-50 rounded-lg border border-slate-100 hover:border-indigo-200 transition-colors"
+                            >
+                              <div className="flex items-start justify-between gap-4">
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap mb-1">
+                                    <h4 className="font-bold text-slate-900">
+                                      {i + 1}. {source.title}
+                                    </h4>
+                                    {source.credibilityScore != null && (
+                                      <span
+                                        className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                                          source.credibilityScore >= 0.7
+                                            ? 'bg-emerald-100 text-emerald-700'
+                                            : source.credibilityScore >= 0.4
+                                              ? 'bg-amber-100 text-amber-700'
+                                              : 'bg-rose-100 text-rose-700'
+                                        }`}
+                                      >
+                                        {(source.credibilityScore * 100).toFixed(0)}% credible
+                                      </span>
+                                    )}
+                                    {source.apiSource && (
+                                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
+                                        {source.apiSource}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {source.author && (
+                                    <p className="text-xs text-slate-500 mb-1">
+                                      By {source.author}
+                                    </p>
+                                  )}
+                                  {source.url && (
+                                    <a
+                                      href={source.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-xs text-indigo-600 hover:text-indigo-800 hover:underline break-all flex items-center gap-1"
+                                    >
+                                      <ExternalLink size={12} className="shrink-0" />
+                                      {source.url}
+                                    </a>
+                                  )}
+                                </div>
+                              </div>
                             </div>
-                            {source.url && (
-                              <a
-                                href={source.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity"
-                              >
-                                <ExternalLink size={18} />
-                              </a>
-                            )}
-                          </div>
-                        ))}
-                      </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-slate-400 italic">
+                          No sources were recorded for this research session.
+                        </p>
+                      )}
                     </section>
                   )}
+
                 </div>
               </div>
             </motion.div>

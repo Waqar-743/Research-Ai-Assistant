@@ -137,13 +137,21 @@ Respond in JSON format:
                 for item in analysis.get("analysis", []):
                     idx = item.get("source_index", 1) - 1
                     if 0 <= idx < len(sources):
+                        src = sources[idx]
+                        # Store structured {title, url} dicts so downstream agents
+                        # can generate real hyperlink citations in the report
+                        src_ref = {
+                            "title": src.get("title", ""),
+                            "url": src.get("url", ""),
+                            "api_source": src.get("api_source", "")
+                        }
                         verdict = item.get("verdict", "neutral")
                         if verdict == "supports":
-                            supporting.append(sources[idx].get("source_id", str(idx)))
+                            supporting.append(src_ref)
                         elif verdict == "contradicts":
-                            contradicting.append(sources[idx].get("source_id", str(idx)))
+                            contradicting.append(src_ref)
                         else:
-                            neutral.append(sources[idx].get("source_id", str(idx)))
+                            neutral.append(src_ref)
                 
                 return {
                     "claim": claim,
